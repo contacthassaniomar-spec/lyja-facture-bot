@@ -6,7 +6,8 @@ from datetime import date, datetime
 
 
 def data_dir() -> Path:
-    base = os.getenv("DATA_DIR", "/data")  # Railway Volume conseillé
+    # Railway Volume conseillé: /data
+    base = os.getenv("DATA_DIR", "/data")
     p = Path(base)
     p.mkdir(parents=True, exist_ok=True)
     return p
@@ -16,7 +17,8 @@ DB_PATH = data_dir() / "app.db"
 
 
 def _conn():
-    conn = sqlite3.connect(DB_PATH)
+    # timeout + check_same_thread pour éviter certains bugs en prod
+    conn = sqlite3.connect(DB_PATH, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -97,9 +99,7 @@ def get_setting(key: str, default: str = "") -> str:
     c.execute("SELECT value FROM settings WHERE key=?", (key,))
     row = c.fetchone()
     conn.close()
-    if not row:
-        return default
-    return row["value"]
+    return row["value"] if row else default
 
 
 def slugify(s: str) -> str:
@@ -149,13 +149,16 @@ def update_client(client_id: int, fields: dict):
     allowed = {"name", "email", "phone", "address1", "address2", "zip", "city", "country", "siret", "tva"}
     parts = []
     vals = []
+
     for k, v in (fields or {}).items():
         if k in allowed:
             parts.append(f"{k}=?")
             vals.append((v or "").strip())
+
     if not parts:
         return
-    vals.append(client_id)
+
+    vals.append(int(client_id))
     conn = _conn()
     c = conn.cursor()
     c.execute(f"UPDATE clients SET {', '.join(parts)} WHERE id=?", vals)
@@ -166,7 +169,7 @@ def update_client(client_id: int, fields: dict):
 def get_client(client_id: int):
     conn = _conn()
     c = conn.cursor()
-    c.execute("SELECT * FROM clients WHERE id=?", (client_id,))
+    c.execute("SELECT * FROM clients WHERE id=?", (int(client_id),))
     row = c.fetchone()
     conn.close()
     return dict(row) if row else None
@@ -174,15 +177,15 @@ def get_client(client_id: int):
 
 def search_clients(q: str, limit: int = 20):
     q = (q or "").strip()
+    like = f"%{q}%"
     conn = _conn()
     c = conn.cursor()
-    like = f"%{q}%"
     c.execute("""
       SELECT * FROM clients
       WHERE name LIKE ? OR email LIKE ? OR phone LIKE ?
       ORDER BY name ASC
       LIMIT ?
-    """, (like, like, like, limit))
+    """, (like, like, like, int(limit)))
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -191,7 +194,7 @@ def search_clients(q: str, limit: int = 20):
 def list_clients(limit: int = 200):
     conn = _conn()
     c = conn.cursor()
-    c.execute("SELECT * FROM clients ORDER BY name ASC LIMIT ?", (limit,))
+    c.execute("SELECT * FROM clients ORDER BY name ASC LIMIT ?", (int(limit),))
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -296,7 +299,7 @@ def save_invoice(
     return int(iid)
 
 
-# ✅ NOUVEAU : “Mes factures”
+# ✅ “Mes factures”
 def list_invoices_for_client(client_id: int, limit: int = 50):
     conn = _conn()
     c = conn.cursor()
