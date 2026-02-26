@@ -1,8 +1,25 @@
+# bot.py  ✅ VERSION FINIE (avec facture par vocal + aperçu + validation)
+# ---------------------------------------------------------------
+# ✅ Ajout :
+# - Tu peux envoyer un VOCAL : "fais moi une facture à hociphone ... 1200€"
+# - Le bot transcrit, extrait Client / Description / Montant
+# - Il affiche un APERÇU (récap) + ✅ Valider / ✏️ Modifier / ❌ Annuler
+# - Si tu valides => génération PDF + envoi
+#
+# ⚠️ Variables Railway à mettre :
+# - BOT_TOKEN
+# - OPENAI_API_KEY   (obligatoire pour la transcription)
+# - OWNER_TELEGRAM_ID (optionnel si admin_only=true)
+# - DATA_DIR=/data (recommandé)
+
 import os
+import re
 import json
+import tempfile
 from pathlib import Path
 from datetime import date
 from decimal import Decimal
+from typing import Optional, Tuple
 
 from telegram import (
     Update,
@@ -29,6 +46,7 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
 
+# ---------------- Config ----------------
 def load_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
@@ -95,6 +113,7 @@ def normalize_company_for_pdf(company: dict) -> dict:
         "siret": siret,
         "tva": tva,
         "vat_notice": vat_notice,
+        # backward compat
         "nom": legal,
         "enseigne": brand,
         "adresse": address1,
@@ -125,6 +144,7 @@ def normalize_client_for_pdf(client: dict) -> dict:
         "country": country,
         "siret": siret,
         "tva": tva,
+        # backward compat
         "nom": name,
         "adresse": address1,
         "zip_code": zip_,
@@ -152,7 +172,9 @@ def normalize_client_for_pdf(client: dict) -> dict:
     IMPORT_CLIENTS,
     INVOICES_CLIENT_PICK,
     INVOICES_LIST,
-) = range(15)
+    # ✅ New
+    DRAFT_EDIT,
+) = range(16)
 
 
 # ---------------- Bottom main keyboard (SEULEMENT 4 BOUTONS) ----------------
@@ -169,9 +191,8 @@ def bottom_main() -> ReplyKeyboardMarkup:
 # ---------------- UI message (suit la conversation) ----------------
 async def ui_show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup | None):
     """
-    ✅ NOUVELLE LOGIQUE:
     - Supprime l'ancien message UI (du bot) si possible
-    - Envoie un nouveau message (donc le sous-menu reste en bas du chat)
+    - Envoie un nouveau message (donc le sous-menu reste dans le fil de discussion)
     """
     text = text if (text and text.strip()) else "…"
 
@@ -247,12 +268,7 @@ def invoice_to_btn(inv: dict):
 # ---------------- Navigation helpers ----------------
 async def go_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["screen"] = "MENU"
-    await ui_show(
-        update,
-        context,
-        "🏠 **Menu**\nChoisis une section :",
-        main_menu_inline(),
-    )
+    await ui_show(update, context, "🏠 Menu\nChoisis une section :", main_menu_inline())
     return MENU
 
 
@@ -265,9 +281,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.init_db()
     context.user_data.clear()
 
-    # On met le clavier principal UNE fois (plus de flèche, plus de message vide)
     await update.message.reply_text(
-        "✅ Bot Facture en ligne.\nUtilise les **4 boutons** en bas 👇",
+        "✅ Bot Facture en ligne.\nUtilise les 4 boutons en bas 👇\n\n"
+        "💡 Astuce : tu peux aussi envoyer un VOCAL du style :\n"
+        "“Fais moi une facture à Hociphone, description tirage fibre, montant 1200€”",
         reply_markup=bottom_main(),
     )
     return await go_menu(update, context)
@@ -282,7 +299,7 @@ async def bottom_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if txt == "👥 Clients":
         context.user_data["screen"] = "CLIENTS"
-        await ui_show(update, context, "👥 **Clients**\nQue veux-tu faire ?", clients_inline())
+        await ui_show(update, context, "👥 Clients\nQue veux-tu faire ?", clients_inline())
         return CLIENTS_MENU
 
     if txt == "🧾 Créer une facture":
@@ -290,12 +307,12 @@ async def bottom_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("client_id", None)
         context.user_data.pop("client", None)
         context.user_data.pop("new_client", None)
-        await ui_show(update, context, "🧾 **Nouvelle facture**\nChoisis une option :", new_inv_inline())
+        await ui_show(update, context, "🧾 Nouvelle facture\nChoisis une option :", new_inv_inline())
         return MENU
 
     if txt == "🗂️ Mes factures":
         context.user_data["screen"] = "INVOICES"
-        await ui_show(update, context, "🗂️ **Mes factures**\nChoisis une option :", invoices_inline())
+        await ui_show(update, context, "🗂️ Mes factures\nChoisis une option :", invoices_inline())
         return INVOICES_CLIENT_PICK
 
     return MENU
@@ -313,21 +330,329 @@ async def top_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "TOP::CLIENTS":
         context.user_data["screen"] = "CLIENTS"
-        await ui_show(update, context, "👥 **Clients**\nQue veux-tu faire ?", clients_inline())
+        await ui_show(update, context, "👥 Clients\nQue veux-tu faire ?", clients_inline())
         return CLIENTS_MENU
 
     if q.data == "TOP::NEW_INV":
         context.user_data["screen"] = "NEW_INV"
-        await ui_show(update, context, "🧾 **Nouvelle facture**\nChoisis une option :", new_inv_inline())
+        await ui_show(update, context, "🧾 Nouvelle facture\nChoisis une option :", new_inv_inline())
         return MENU
 
     if q.data == "TOP::INVOICES":
         context.user_data["screen"] = "INVOICES"
-        await ui_show(update, context, "🗂️ **Mes factures**\nChoisis une option :", invoices_inline())
+        await ui_show(update, context, "🗂️ Mes factures\nChoisis une option :", invoices_inline())
         return INVOICES_CLIENT_PICK
 
     return MENU
 
+
+# ======================================================================
+# ✅ VOICE INVOICE (Vocal -> transcription OpenAI -> draft -> preview)
+# ======================================================================
+
+def _openai_client():
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None, "OPENAI_API_KEY manquant dans tes Variables Railway."
+    try:
+        from openai import OpenAI  # type: ignore
+        return OpenAI(api_key=api_key), None
+    except Exception as e:
+        return None, f"Lib OpenAI non dispo (pip). Erreur: {e}"
+
+
+async def transcribe_voice_file(local_path: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Retourne (texte, erreur)
+    """
+    client, err = _openai_client()
+    if err:
+        return None, err
+    if client is None:
+        return None, "OpenAI client indisponible."
+
+    try:
+        # modèle stable
+        with open(local_path, "rb") as f:
+            res = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                # language="fr",  # tu peux laisser auto, mais FR aide parfois
+            )
+        text = getattr(res, "text", None) or (res.get("text") if isinstance(res, dict) else None)
+        text = (text or "").strip()
+        return (text if text else None), None
+    except Exception as e:
+        return None, f"Erreur transcription: {e}"
+
+
+def parse_invoice_from_text(text: str) -> dict:
+    """
+    Extraction simple & robuste :
+    - client: après "facture à/a/au/chez ..."
+    - description: après "description ..."
+    - montant: après "montant ...", ou dernier nombre + €
+    """
+    t = (text or "").strip()
+    low = t.lower()
+
+    client = None
+    desc = None
+    amount = None
+
+    # client
+    m = re.search(r"\bfacture\s+(?:à|a|au|chez)\s+([^\.,;]+)", low, flags=re.IGNORECASE)
+    if m:
+        client = m.group(1).strip()
+
+    # description
+    m = re.search(r"\bdescription\s+([^\.,;]+?)(?:\bmontant\b|$)", low, flags=re.IGNORECASE)
+    if m:
+        desc = m.group(1).strip()
+
+    # montant
+    m = re.search(r"\bmontant\s*(?:de|:)?\s*([0-9]+(?:[ \.,][0-9]{1,2})?)\s*€?", low, flags=re.IGNORECASE)
+    if m:
+        amount = m.group(1).strip()
+    else:
+        # fallback: dernier nombre avant €
+        m2 = re.search(r"([0-9]+(?:[ \.,][0-9]{1,2})?)\s*€", low)
+        if m2:
+            amount = m2.group(1).strip()
+
+    # clean
+    def clean_name(s: str) -> str:
+        s = s.strip()
+        s = re.sub(r"\s+", " ", s)
+        s = s.strip(" .,:;")
+        return s
+
+    if client:
+        client = clean_name(client)
+    if desc:
+        desc = clean_name(desc)
+
+    amount_f = None
+    if amount:
+        try:
+            amount_f = money_to_float(amount)
+        except Exception:
+            amount_f = None
+
+    return {
+        "raw": t,
+        "client_name": client,
+        "description": desc,
+        "amount": amount_f,
+    }
+
+
+def draft_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Valider et générer PDF", callback_data="DRAFT::CONFIRM")],
+        [InlineKeyboardButton("✏️ Modifier", callback_data="DRAFT::EDIT")],
+        [InlineKeyboardButton("❌ Annuler", callback_data="DRAFT::CANCEL")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+    ])
+
+
+def draft_text(d: dict) -> str:
+    client = d.get("client_name") or "—"
+    desc = d.get("description") or "—"
+    amt = d.get("amount")
+    amt_txt = "—" if amt is None else f"{amt:,.2f} €".replace(",", " ").replace(".", ",")
+    return (
+        "🧾 Aperçu facture (vocal)\n"
+        f"• Client : {client}\n"
+        f"• Description : {desc}\n"
+        f"• Montant TTC : {amt_txt}\n\n"
+        "✅ Si c’est bon, clique Valider."
+    )
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Réception d'un vocal Telegram -> download -> transcription -> draft
+    """
+    # Selon Telegram: voice / audio
+    voice = update.message.voice if update.message else None
+    audio = update.message.audio if update.message else None
+
+    file_obj = None
+    filename = None
+    if voice:
+        file_obj = voice
+        filename = "voice.ogg"
+    elif audio:
+        file_obj = audio
+        filename = (audio.file_name or "audio.ogg")
+    else:
+        return MENU
+
+    await update.message.reply_text("🎙️ Reçu ! Je transcris ton vocal…", reply_markup=bottom_main())
+
+    tg_file = await context.bot.get_file(file_obj.file_id)
+
+    with tempfile.TemporaryDirectory() as td:
+        local_path = str(Path(td) / filename)
+        await tg_file.download_to_drive(local_path)
+
+        text, err = await transcribe_voice_file(local_path)
+        if err:
+            await update.message.reply_text(f"❌ {err}\n\nVérifie OPENAI_API_KEY + requirements.", reply_markup=bottom_main())
+            return MENU
+
+        if not text:
+            await update.message.reply_text("❌ Je n’ai pas réussi à comprendre le vocal. Réessaie plus lentement.", reply_markup=bottom_main())
+            return MENU
+
+        parsed = parse_invoice_from_text(text)
+
+    # Enregistre draft
+    context.user_data["draft_inv"] = parsed
+
+    # Si infos manquantes, on propose modification directe
+    missing = []
+    if not parsed.get("client_name"):
+        missing.append("client")
+    if not parsed.get("description"):
+        missing.append("description")
+    if parsed.get("amount") is None:
+        missing.append("montant")
+
+    if missing:
+        await ui_show(
+            update,
+            context,
+            "🎙️ Transcription :\n"
+            f"“{parsed.get('raw','')}”\n\n"
+            f"⚠️ Il manque : {', '.join(missing)}\n"
+            "Clique ✏️ Modifier pour compléter.",
+            draft_keyboard()
+        )
+        return MENU
+
+    await ui_show(
+        update,
+        context,
+        "🎙️ Transcription :\n"
+        f"“{parsed.get('raw','')}”\n\n"
+        + draft_text(parsed),
+        draft_keyboard()
+    )
+    return MENU
+
+
+async def draft_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "DRAFT::CANCEL":
+        context.user_data.pop("draft_inv", None)
+        await ui_show(update, context, "❌ Annulé.", main_menu_inline())
+        return MENU
+
+    if q.data == "DRAFT::EDIT":
+        d = context.user_data.get("draft_inv") or {}
+        await ui_show(
+            update,
+            context,
+            "✏️ Modification rapide\n"
+            "Envoie un message au format :\n"
+            "`client=Hociphone; desc=Tirage fibre; montant=1200`\n\n"
+            "Tu peux mettre 1, 2 ou 3 champs.",
+            InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]]),
+        )
+        return DRAFT_EDIT
+
+    if q.data != "DRAFT::CONFIRM":
+        return MENU
+
+    d = context.user_data.get("draft_inv") or {}
+    client_name = (d.get("client_name") or "").strip()
+    desc = (d.get("description") or "").strip()
+    amount = d.get("amount")
+
+    if not client_name or not desc or amount is None:
+        await ui_show(update, context, "⚠️ Draft incomplet. Clique ✏️ Modifier.", draft_keyboard())
+        return MENU
+
+    # Trouver ou créer client
+    matches = db.search_clients(client_name, 5)
+    if matches:
+        client = matches[0]
+        context.user_data["client_id"] = client["id"]
+        context.user_data["client"] = client
+    else:
+        cid = db.add_client(name=client_name)
+        client = db.get_client(cid)
+        db.client_folder(client)
+        context.user_data["client_id"] = cid
+        context.user_data["client"] = client
+
+    # Pré-remplir l'étape facture
+    context.user_data["description"] = desc
+    context.user_data["unit_price"] = float(amount)
+
+    # Préparer le numéro etc, comme price_step()
+    context.user_data["qty"] = float(CFG.get("invoice", {}).get("qty_default", 1))
+    context.user_data["unit"] = CFG.get("invoice", {}).get("unit_default", "u")
+    context.user_data["tax_rate"] = 0.0
+
+    prefix = CFG.get("invoice", {}).get("number_prefix", "FACTURE")
+    use_year = bool(CFG.get("invoice", {}).get("use_year", True))
+    number = db.next_invoice_number(prefix, date.today(), use_year=use_year)
+    context.user_data["number"] = number
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Générer PDF", callback_data="INVCONF::GO")],
+        [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INVCONF::FORCE")],
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+    ])
+    await ui_show(update, context, recap_message(context), kb)
+    return INV_CONFIRM
+
+
+def _parse_kv_line(line: str) -> dict:
+    """
+    "client=Hociphone; desc=Tirage fibre; montant=1200"
+    """
+    out = {}
+    s = (line or "").strip()
+    parts = re.split(r"[;\n]+", s)
+    for p in parts:
+        if "=" not in p:
+            continue
+        k, v = p.split("=", 1)
+        k = k.strip().lower()
+        v = v.strip()
+        if k in ("client", "client_name", "nom", "name"):
+            out["client_name"] = v
+        elif k in ("desc", "description", "libelle", "libellé"):
+            out["description"] = v
+        elif k in ("montant", "amount", "prix", "price"):
+            try:
+                out["amount"] = money_to_float(v)
+            except Exception:
+                pass
+    return out
+
+
+async def draft_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (update.message.text or "").strip()
+    d = context.user_data.get("draft_inv") or {}
+    patch = _parse_kv_line(msg)
+
+    d.update({k: v for k, v in patch.items() if v not in (None, "")})
+    context.user_data["draft_inv"] = d
+
+    await ui_show(update, context, draft_text(d), draft_keyboard())
+    return MENU
+
+
+# ======================================================================
+# EXISTANT : Clients / Facture / PDF / Invoices
+# ======================================================================
 
 # ---------------- CLIENTS section (inline) ----------------
 async def clients_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -343,21 +668,21 @@ async def clients_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[client_to_btn(c, prefix="CLVIEW::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::CLIENTS")])
         kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
-        await ui_show(update, context, "📋 **Liste clients**\nSélectionne :", InlineKeyboardMarkup(kb))
+        await ui_show(update, context, "📋 Liste clients\nSélectionne :", InlineKeyboardMarkup(kb))
         return CLIENTS_MENU
 
     if q.data == "CLIENTS::ADD":
-        await ui_show(update, context, "➕ **Nouveau client**\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
+        await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
 
     if q.data == "CLIENTS::IMPORT":
         await ui_show(update, context,
-                      "📥 **Import clients**\n\n"
+                      "📥 Import clients\n\n"
                       "Colle tes clients (1 par ligne) au format :\n"
-                      "`NOM | ADRESSE | CP | VILLE | SIRET | TVA`\n\n"
-                      "Si TVA n’existe pas, mets `-`.\n\n"
+                      "NOM | ADRESSE | CP | VILLE | SIRET | TVA\n\n"
+                      "Si TVA n’existe pas, mets '-'.\n\n"
                       "➡️ Colle maintenant ton bloc (réponds dans le chat).",
                       InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]]))
         return IMPORT_CLIENTS
@@ -372,7 +697,7 @@ async def inv_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "INV::SEARCH_CLIENT":
         context.user_data["pending_search_mode"] = "NEW_INV"
-        await ui_show(update, context, "🔎 **Recherche client**\nTape le nom / email / tel :", InlineKeyboardMarkup([
+        await ui_show(update, context, "🔎 Recherche client\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_SEARCH_FOR_INV
@@ -386,11 +711,11 @@ async def inv_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::NEW_INV")])
         kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
-        await ui_show(update, context, "📋 **Choisis un client** :", InlineKeyboardMarkup(kb))
+        await ui_show(update, context, "📋 Choisis un client :", InlineKeyboardMarkup(kb))
         return MENU
 
     if q.data == "INV::ADD_CLIENT":
-        await ui_show(update, context, "➕ **Nouveau client**\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
+        await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
@@ -408,7 +733,7 @@ async def client_search_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in results]
     kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::NEW_INV")])
     kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
-    await ui_show(update, context, "✅ **Résultats**\nSélectionne un client :", InlineKeyboardMarkup(kb))
+    await ui_show(update, context, "✅ Résultats\nSélectionne un client :", InlineKeyboardMarkup(kb))
     return MENU
 
 
@@ -421,7 +746,7 @@ async def client_select_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await ui_show(update, context, "🧾 **Facture**\nChoisis une description :", presets_keyboard())
+    await ui_show(update, context, "🧾 Facture\nChoisis une description :", presets_keyboard())
     return INV_DESC
 
 
@@ -489,7 +814,7 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await ui_show(update, context, f"✅ Client ajouté: **{client.get('name')}**\n\n🧾 Choisis une description :", presets_keyboard())
+    await ui_show(update, context, f"✅ Client ajouté: {client.get('name')}\n\n🧾 Choisis une description :", presets_keyboard())
     return INV_DESC
 
 
@@ -530,7 +855,7 @@ def recap_message(context) -> str:
     number = context.user_data["number"]
     desc = context.user_data["description"]
     msg = (
-        f"📌 **Récapitulatif**\n"
+        f"📌 Récapitulatif\n"
         f"• Client : {client.get('name')}\n"
         f"• Description : {desc}\n"
         f"• Montant TTC : {price:.2f} € (TVA non applicable)\n"
@@ -651,6 +976,9 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with open(pdf_path, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
+
+    # Nettoyage draft vocal éventuel
+    context.user_data.pop("draft_inv", None)
 
     return await go_menu(update, context)
 
@@ -803,6 +1131,7 @@ async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Commande inconnue. Tape /start", reply_markup=bottom_main())
 
 
+# ---------------- Main ----------------
 def main():
     token = os.getenv("BOT_TOKEN", "").strip()
     if not token:
@@ -818,8 +1147,15 @@ def main():
         states={
             MENU: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+
+                # ✅ VOCAL: dispo depuis partout
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+
                 CallbackQueryHandler(top_menu_click, pattern=r"^TOP::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
+
                 CallbackQueryHandler(inv_actions, pattern=r"^INV::"),
                 CallbackQueryHandler(clients_actions, pattern=r"^CLIENTS::"),
                 CallbackQueryHandler(invoices_actions, pattern=r"^INVOICES::"),
@@ -828,72 +1164,98 @@ def main():
 
             CLIENTS_MENU: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 CallbackQueryHandler(clients_actions, pattern=r"^CLIENTS::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             CLIENT_SEARCH_FOR_INV: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, client_search_for_inv),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             CLIENT_ADD_NAME: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_ADDR: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_CITYZIP: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_SIRET: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_TVA: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             IMPORT_CLIENTS: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             INV_DESC: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 CallbackQueryHandler(desc_pick, pattern=r"^PRESET::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_PRICE: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, price_step),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_CONFIRM: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 CallbackQueryHandler(inv_confirm_click, pattern=r"^INVCONF::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_FORCE_NUMBER: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, force_number),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             INVOICES_CLIENT_PICK: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 CallbackQueryHandler(invoices_actions, pattern=r"^INVOICES::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invoices_search_text),
                 CallbackQueryHandler(invoices_client_pick, pattern=r"^INVCL::"),
@@ -902,7 +1264,16 @@ def main():
 
             INVOICES_LIST: [
                 MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.VOICE | filters.AUDIO, handle_voice),
+                CallbackQueryHandler(draft_click, pattern=r"^DRAFT::"),
                 CallbackQueryHandler(invoice_open, pattern=r"^INVFILE::"),
+                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+            ],
+
+            # ✅ Edition draft vocal
+            DRAFT_EDIT: [
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, draft_edit_text),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
         },
