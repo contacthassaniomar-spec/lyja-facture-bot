@@ -1,23 +1,35 @@
 {
+  "bot": {
+    "name": "FACTURE LYJA FRANCE",
+    "admin_telegram_user_ids": []
+  },
   "seller": {
-    "brand_name": "lyja.france",
-    "legal_name": "OMAR HASSANI",
-    "address_lines": ["7 RUE LOUIS LEPRINCE RINGUET BAT C", "13013 MARSEILLE"],
-    "phone": "0635256310",
-    "email": "lyja.france@gmail.com",
+    "company": "LYJA FRANCE",
+    "address_lines": ["Adresse ligne 1", "Code Postal Ville", "France"],
+    "email": "contact@lyja.fr",
+    "phone": "+33 6 00 00 00 00",
     "siret": "81795380500022",
-    "vat_note": "TVA non applicable, art. 293 B du CGI",
-    "footer_line": "7 RUE LOUIS LEPRINCE RINGUET BAT C 13013 MARSEILLE"
+    "vat_notice": "TVA non applicable, art. 293 B du CGI"
   },
   "invoice": {
     "currency": "EUR",
-    "number_prefix": "FACTURE",
     "operation_type_default": "Prestation de services",
     "due_default": "À la réception de la facture",
+    "qty_default": 1,
     "unit_default": "u",
-    "qty_default": 1
+    "number_prefix": "FACTURE",
+    "number_digits": 3
   },
-  "branding": {
-    "logo_path": "assets/logo.png"
+  "descriptions": {
+    "presets": [
+      "Prestation de services",
+      "Vente de marchandises",
+      "Acompte",
+      "Règlement solde"
+    ]
+  },
+  "pdf": {
+    "logo_path": "assets/logo.png",
+    "primary_color": "#000000"
   }
 }
