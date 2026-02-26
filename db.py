@@ -1,285 +1,274 @@
-from __future__ import annotations
-
 import os
+import re
 import sqlite3
-from datetime import date
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from datetime import date, datetime
 
+def data_dir() -> Path:
+    # Railway Volume conseillé: /data
+    base = os.getenv("DATA_DIR", "/data")
+    p = Path(base)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
-DB_PATH_DEFAULT = os.path.join("data", "app.db")
+DB_PATH = data_dir() / "app.db"
 
-
-def _connect(db_path: str = DB_PATH_DEFAULT) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
+def _conn():
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
+def init_db():
+    conn = _conn()
+    c = conn.cursor()
 
-def init_db(db_path: str = DB_PATH_DEFAULT) -> None:
-    """Create tables if missing."""
-    conn = _connect(db_path)
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            contact_name TEXT,
-            email TEXT,
-            phone TEXT,
-            address1 TEXT,
-            address2 TEXT,
-            zip TEXT,
-            city TEXT,
-            country TEXT DEFAULT 'France',
-            siret TEXT,
-            vat TEXT
-        );
-        """
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     )
+    """)
 
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS invoices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT NOT NULL UNIQUE,
-            issue_date TEXT NOT NULL,
-            due_text TEXT NOT NULL,
-            operation_type TEXT NOT NULL,
-            client_id INTEGER NOT NULL,
-            description TEXT NOT NULL,
-            qty REAL NOT NULL,
-            unit TEXT NOT NULL,
-            unit_price REAL NOT NULL,
-            vat_rate REAL NOT NULL,
-            total_ht REAL NOT NULL,
-            total_vat REAL NOT NULL,
-            total_ttc REAL NOT NULL,
-            currency TEXT NOT NULL,
-            FOREIGN KEY (client_id) REFERENCES clients(id)
-        );
-        """
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS clients (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      email TEXT DEFAULT '',
+      phone TEXT DEFAULT '',
+      address1 TEXT DEFAULT '',
+      address2 TEXT DEFAULT '',
+      zip TEXT DEFAULT '',
+      city TEXT DEFAULT '',
+      country TEXT DEFAULT 'France',
+      siret TEXT DEFAULT '',
+      tva TEXT DEFAULT '',
+      created_at TEXT NOT NULL
     )
+    """)
 
-    # settings (next invoice number per year, etc.)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
-        """
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS invoices (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      number TEXT NOT NULL,
+      issue_date TEXT NOT NULL,
+      due TEXT NOT NULL,
+      operation_type TEXT NOT NULL,
+      description TEXT NOT NULL,
+      qty REAL NOT NULL,
+      unit TEXT NOT NULL,
+      unit_price REAL NOT NULL,
+      tax_rate REAL NOT NULL,
+      total_ht REAL NOT NULL,
+      total_tva REAL NOT NULL,
+      total_ttc REAL NOT NULL,
+      pdf_path TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(client_id) REFERENCES clients(id)
     )
+    """)
 
-    # saved description templates
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS descriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            label TEXT UNIQUE
-        );
-        """
-    )
-
-    # remember last description per client
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS client_last_desc (
-            client_id INTEGER PRIMARY KEY,
-            label TEXT
-        );
-        """
-    )
+    c.execute("CREATE INDEX IF NOT EXISTS idx_clients_name ON clients(name)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_invoices_client ON invoices(client_id)")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_invoices_number ON invoices(number)")
 
     conn.commit()
     conn.close()
 
-
-def upsert_client(data: Dict[str, Any], db_path: str = DB_PATH_DEFAULT) -> int:
-    """Insert a new client and return id. (Simple: always insert.)"""
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO clients (name, contact_name, email, phone, address1, address2, zip, city, country, siret, vat)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            (data.get("name") or "").strip(),
-            (data.get("contact_name") or "").strip() or None,
-            (data.get("email") or "").strip() or None,
-            (data.get("phone") or "").strip() or None,
-            (data.get("address1") or "").strip() or None,
-            (data.get("address2") or "").strip() or None,
-            (data.get("zip") or "").strip() or None,
-            (data.get("city") or "").strip() or None,
-            ((data.get("country") or "France").strip()),
-            (data.get("siret") or "").strip() or None,
-            (data.get("vat") or "").strip() or None,
-        ),
-    )
+def set_setting(key: str, value: str):
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
     conn.commit()
-    cid = cur.lastrowid
     conn.close()
-    return int(cid)
 
-
-def list_clients(limit: int = 10, q: str = "", db_path: str = DB_PATH_DEFAULT) -> List[Dict[str, Any]]:
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    q = (q or "").strip()
-    if q:
-        like = f"%{q}%"
-        cur.execute(
-            """
-            SELECT * FROM clients
-            WHERE name LIKE ? OR email LIKE ? OR phone LIKE ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (like, like, like, limit),
-        )
-    else:
-        cur.execute("SELECT * FROM clients ORDER BY id DESC LIMIT ?", (limit,))
-    rows = [dict(r) for r in cur.fetchall()]
-    conn.close()
-    return rows
-
-
-def get_client(client_id: int, db_path: str = DB_PATH_DEFAULT) -> Dict[str, Any]:
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM clients WHERE id = ?", (client_id,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        raise ValueError("Client introuvable")
-    return dict(row)
-
-
-def create_invoice(data: Dict[str, Any], db_path: str = DB_PATH_DEFAULT) -> int:
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO invoices
-        (number, issue_date, due_text, operation_type, client_id, description, qty, unit, unit_price, vat_rate,
-         total_ht, total_vat, total_ttc, currency)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            data["number"],
-            data["issue_date"],
-            data["due_text"],
-            data["operation_type"],
-            data["client_id"],
-            data["description"],
-            data["qty"],
-            data["unit"],
-            data["unit_price"],
-            data["vat_rate"],
-            data["total_ht"],
-            data["total_vat"],
-            data["total_ttc"],
-            data["currency"],
-        ),
-    )
-    conn.commit()
-    inv_id = cur.lastrowid
-    conn.close()
-    return int(inv_id)
-
-
-def get_setting(key: str, default: Optional[str] = None, db_path: str = DB_PATH_DEFAULT) -> Optional[str]:
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute("SELECT value FROM settings WHERE key=?", (key,))
-    row = cur.fetchone()
+def get_setting(key: str, default: str = "") -> str:
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT value FROM settings WHERE key=?", (key,))
+    row = c.fetchone()
     conn.close()
     if not row:
         return default
-    return str(row[0])
+    return row["value"]
 
+def slugify(s: str) -> str:
+    s = s.strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s)
+    s = re.sub(r"-+", "-", s).strip("-")
+    return s or "client"
 
-def set_setting(key: str, value: str, db_path: str = DB_PATH_DEFAULT) -> None:
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO settings(key,value) VALUES(?,?)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value
-        """,
-        (key, str(value)),
-    )
+def add_client(
+    name: str,
+    email: str = "",
+    phone: str = "",
+    address1: str = "",
+    address2: str = "",
+    zip_code: str = "",
+    city: str = "",
+    country: str = "France",
+    siret: str = "",
+    tva: str = ""
+) -> int:
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("""
+      INSERT INTO clients(name,email,phone,address1,address2,zip,city,country,siret,tva,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        name.strip(),
+        (email or "").strip(),
+        (phone or "").strip(),
+        (address1 or "").strip(),
+        (address2 or "").strip(),
+        (zip_code or "").strip(),
+        (city or "").strip(),
+        (country or "France").strip(),
+        (siret or "").strip(),
+        (tva or "").strip(),
+        datetime.utcnow().isoformat()
+    ))
     conn.commit()
+    cid = c.lastrowid
     conn.close()
+    return int(cid)
 
-
-def _next_seq_key(year: int) -> str:
-    return f"next_invoice_seq:{year}"
-
-
-def get_next_invoice_seq(issue_date: date, db_path: str = DB_PATH_DEFAULT) -> int:
-    year = issue_date.year
-    v = get_setting(_next_seq_key(year), default=None, db_path=db_path)
-    if v is None:
-        set_setting(_next_seq_key(year), "1", db_path=db_path)
-        return 1
-    try:
-        return int(v)
-    except Exception:
-        set_setting(_next_seq_key(year), "1", db_path=db_path)
-        return 1
-
-
-def set_next_invoice_seq(issue_date: date, seq: int, db_path: str = DB_PATH_DEFAULT) -> None:
-    year = issue_date.year
-    set_setting(_next_seq_key(year), str(int(seq)), db_path=db_path)
-
-
-def invoice_number_from_seq(prefix: str, issue_date: date, seq: int, digits: int = 3) -> str:
-    return f"{prefix}-{issue_date.year}-{int(seq):0{digits}d}"
-
-
-def add_description(label: str, db_path: str = DB_PATH_DEFAULT) -> None:
-    lbl = (label or "").strip()
-    if not lbl:
+def update_client(client_id: int, fields: dict):
+    allowed = {"name","email","phone","address1","address2","zip","city","country","siret","tva"}
+    parts = []
+    vals = []
+    for k,v in fields.items():
+        if k in allowed:
+            parts.append(f"{k}=?")
+            vals.append((v or "").strip())
+    if not parts:
         return
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO descriptions(label) VALUES(?)", (lbl,))
+    vals.append(client_id)
+    conn = _conn()
+    c = conn.cursor()
+    c.execute(f"UPDATE clients SET {', '.join(parts)} WHERE id=?", vals)
     conn.commit()
     conn.close()
 
+def get_client(client_id: int):
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM clients WHERE id=?", (client_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
-def set_client_last_desc(client_id: int, label: str, db_path: str = DB_PATH_DEFAULT) -> None:
-    lbl = (label or "").strip()
-    if not lbl:
-        return
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute(
-        """
-        INSERT INTO client_last_desc(client_id,label) VALUES(?,?)
-        ON CONFLICT(client_id) DO UPDATE SET label=excluded.label
-        """,
-        (int(client_id), lbl),
-    )
+def search_clients(q: str, limit: int = 20):
+    q = (q or "").strip()
+    conn = _conn()
+    c = conn.cursor()
+    like = f"%{q}%"
+    c.execute("""
+      SELECT * FROM clients
+      WHERE name LIKE ? OR email LIKE ? OR phone LIKE ?
+      ORDER BY name ASC
+      LIMIT ?
+    """, (like, like, like, limit))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def list_clients(limit: int = 200):
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM clients ORDER BY name ASC LIMIT ?", (limit,))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def next_invoice_number(prefix: str, issue: date, use_year: bool = True) -> str:
+    if use_year:
+        year = issue.year
+        key = f"next_seq_{year}"
+        forced = get_setting(key, "")
+        if forced.isdigit():
+            seq = int(forced)
+        else:
+            conn = _conn()
+            c = conn.cursor()
+            c.execute(
+                "SELECT number FROM invoices WHERE number LIKE ? ORDER BY id DESC LIMIT 50",
+                (f"{prefix}-{year}-%",)
+            )
+            rows = c.fetchall()
+            conn.close()
+
+            mx = 0
+            for (num,) in rows:
+                try:
+                    mx = max(mx, int(str(num).split("-")[-1]))
+                except:
+                    pass
+            seq = mx + 1
+
+        set_setting(key, str(seq + 1))
+        return f"{prefix}-{year}-{seq:03d}"
+
+    # fallback sans année
+    key = "next_seq"
+    forced = get_setting(key, "")
+    seq = int(forced) if forced.isdigit() else 1
+    set_setting(key, str(seq + 1))
+    return f"{prefix}-{seq:03d}"
+
+def invoices_root() -> Path:
+    p = data_dir() / "invoices"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def client_folder(client: dict) -> Path:
+    slug = slugify(client["name"])
+    p = invoices_root() / f"{slug}_{client['id']}"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+def save_invoice(
+    client_id: int,
+    number: str,
+    issue_date: date,
+    due: str,
+    operation_type: str,
+    description: str,
+    qty: float,
+    unit: str,
+    unit_price: float,
+    tax_rate: float,
+    total_ht: float,
+    total_tva: float,
+    total_ttc: float,
+    pdf_path: str
+) -> int:
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("""
+      INSERT INTO invoices(
+        client_id, number, issue_date, due, operation_type, description, qty, unit,
+        unit_price, tax_rate, total_ht, total_tva, total_ttc, pdf_path, created_at
+      )
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
+        client_id,
+        number,
+        issue_date.isoformat(),
+        due,
+        operation_type,
+        description,
+        float(qty),
+        unit,
+        float(unit_price),
+        float(tax_rate),
+        float(total_ht),
+        float(total_tva),
+        float(total_ttc),
+        pdf_path,
+        datetime.utcnow().isoformat()
+    ))
     conn.commit()
+    iid = c.lastrowid
     conn.close()
-
-
-def get_client_last_desc(client_id: int, db_path: str = DB_PATH_DEFAULT) -> Optional[str]:
-    conn = _connect(db_path)
-    cur = conn.cursor()
-    cur.execute("SELECT label FROM client_last_desc WHERE client_id=?", (int(client_id),))
-    row = cur.fetchone()
-    conn.close()
-    return str(row[0]) if row else None
-
-
-def seed_descriptions(presets: List[str], db_path: str = DB_PATH_DEFAULT) -> None:
-    for p in presets or []:
-        add_description(p, db_path=db_path)
+    return int(iid)
