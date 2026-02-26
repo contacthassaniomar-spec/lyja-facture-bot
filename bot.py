@@ -4,14 +4,7 @@ from pathlib import Path
 from datetime import date
 from decimal import Decimal
 
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputFile,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -156,19 +149,41 @@ def normalize_client_for_pdf(client: dict) -> dict:
 ) = range(16)
 
 
+# ---------------- UI “1 message” helpers ----------------
+async def ui_show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup):
+    """
+    Affiche TOUJOURS l'interface dans un seul message édité (au-dessus du clavier).
+    """
+    chat_id = update.effective_chat.id
+    ui_id = context.user_data.get("ui_msg_id")
+
+    # 1) essaye d'éditer le message existant
+    if ui_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=ui_id,
+                text=text,
+                reply_markup=keyboard
+            )
+            return
+        except Exception:
+            context.user_data.pop("ui_msg_id", None)
+
+    # 2) sinon, crée un nouveau message UI
+    msg = await update.effective_message.reply_text(text, reply_markup=keyboard)
+    context.user_data["ui_msg_id"] = msg.message_id
+
+
+async def ui_alert(update: Update, text: str):
+    """
+    Petit message temporaire (optionnel). Ici on répond via callback si possible.
+    """
+    if update.callback_query:
+        await update.callback_query.answer(text, show_alert=True)
+
+
 # ---------------- Keyboards ----------------
-def persistent_menu_keyboard():
-    # ✅ Menu permanent au-dessus du clavier
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton("🏠 Menu"), KeyboardButton("🧾 Créer une facture")],
-            [KeyboardButton("👥 Clients"), KeyboardButton("🗂️ Mes factures")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🧾 Créer une facture", callback_data="MENU::NEW_INV")],
@@ -209,67 +224,9 @@ def invoice_to_btn(inv: dict):
     return InlineKeyboardButton(label[:60], callback_data=f"INVFILE::{inv['id']}")
 
 
-async def go_menu(update: Update, text="🏠 Menu :", edit=False):
-    # ✅ on ré-affiche le clavier permanent
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
-    else:
-        if update.effective_message:
-            await update.effective_message.reply_text(
-                text,
-                reply_markup=persistent_menu_keyboard()
-            )
-            await update.effective_message.reply_text(
-                "Choisis une action :",
-                reply_markup=main_menu_keyboard()
-            )
-    return MENU
-
-
-# ✅ ROUTEUR du menu permanent (reply keyboard)
-async def persistent_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.message.text or "").strip()
-
-    if txt in ("🏠 Menu", "/menu"):
-        return await go_menu(update, text="🏠 Menu :")
-
-    if txt == "🧾 Créer une facture":
-        context.user_data.clear()
-        await update.message.reply_text(
-            "🧾 Nouvelle facture — choisis le client :",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔎 Rechercher un client", callback_data="INVCLIENT::SEARCH")],
-                [InlineKeyboardButton("📋 Choisir dans la liste", callback_data="INVCLIENT::LIST")],
-                [InlineKeyboardButton("➕ Ajouter un client", callback_data="INVCLIENT::ADD")],
-                [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
-            ])
-        )
-        return CLIENT_CHOOSE_FOR_INV
-
-    if txt == "👥 Clients":
-        await update.message.reply_text(
-            "👥 Clients — choisis une action :",
-            reply_markup=clients_menu_keyboard()
-        )
-        return CLIENTS_MENU
-
-    if txt == "🗂️ Mes factures":
-        clients = db.list_clients(200)
-        if not clients:
-            await update.message.reply_text("Aucun client enregistré.", reply_markup=persistent_menu_keyboard())
-            return MENU
-
-        kb = [[client_to_btn(c, prefix="INVCL::")] for c in clients[:40]]
-        kb.append([InlineKeyboardButton("🔎 Rechercher", callback_data="INVCLMODE::SEARCH")])
-        kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
-
-        await update.message.reply_text(
-            "🗂️ Mes factures — choisis un client :",
-            reply_markup=InlineKeyboardMarkup(kb)
-        )
-        return INVOICES_CLIENT_PICK
-
-    # si l'utilisateur tape autre chose, on ignore
+# ---------------- Navigation helpers ----------------
+async def go_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="🏠 Menu principal :"):
+    await ui_show(update, context, text, main_menu_keyboard())
     return MENU
 
 
@@ -281,17 +238,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.init_db()
     context.user_data.clear()
-    await update.message.reply_text(
-        "✅ Bot Facture en ligne.\nChoisis une action :",
-        reply_markup=persistent_menu_keyboard()
-    )
-    await update.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
+    return await go_menu(update, context, "✅ Bot Facture en ligne.\n\n🏠 Menu principal :")
 
 
 async def back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    return await go_menu(update, edit=True)
+    return await go_menu(update, context)
 
 
 # ---------- MENU ----------
@@ -301,14 +253,18 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     action = q.data
 
     if action == "MENU::CLIENTS":
-        await q.edit_message_text("👥 Clients — choisis une action :", reply_markup=clients_menu_keyboard())
+        await ui_show(update, context, "👥 Clients — choisis une action :", clients_menu_keyboard())
         return CLIENTS_MENU
 
     if action == "MENU::NEW_INV":
-        context.user_data.clear()
-        await q.edit_message_text(
+        context.user_data.pop("client_id", None)
+        context.user_data.pop("client", None)
+        context.user_data.pop("new_client", None)
+        await ui_show(
+            update,
+            context,
             "🧾 Nouvelle facture — choisis le client :",
-            reply_markup=InlineKeyboardMarkup([
+            InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔎 Rechercher un client", callback_data="INVCLIENT::SEARCH")],
                 [InlineKeyboardButton("📋 Choisir dans la liste", callback_data="INVCLIENT::LIST")],
                 [InlineKeyboardButton("➕ Ajouter un client", callback_data="INVCLIENT::ADD")],
@@ -320,16 +276,16 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if action == "MENU::INVOICES":
         clients = db.list_clients(200)
         if not clients:
-            await q.edit_message_text("Aucun client enregistré.", reply_markup=main_menu_keyboard())
+            await ui_show(update, context, "Aucun client enregistré.", main_menu_keyboard())
             return MENU
 
         kb = [[client_to_btn(c, prefix="INVCL::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("🔎 Rechercher", callback_data="INVCLMODE::SEARCH")])
         kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
-        await q.edit_message_text("🗂️ Mes factures — choisis un client :", reply_markup=InlineKeyboardMarkup(kb))
+        await ui_show(update, context, "🗂️ Mes factures — choisis un client :", InlineKeyboardMarkup(kb))
         return INVOICES_CLIENT_PICK
 
-    return await go_menu(update, edit=True)
+    return await go_menu(update, context)
 
 
 # ---------- CLIENTS MENU ----------
@@ -340,39 +296,44 @@ async def clients_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if q.data == "CLIENTS::LIST":
         clients = db.list_clients(200)
         if not clients:
-            await q.edit_message_text("Aucun client enregistré.", reply_markup=clients_menu_keyboard())
+            await ui_show(update, context, "Aucun client enregistré.", clients_menu_keyboard())
             return CLIENTS_MENU
 
         kb = [[client_to_btn(c, prefix="CLVIEW::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour clients", callback_data="BACK::CLIENTS")])
-        await q.edit_message_text("📋 Liste clients :", reply_markup=InlineKeyboardMarkup(kb))
+        await ui_show(update, context, "📋 Liste clients :", InlineKeyboardMarkup(kb))
         return CLIENTS_MENU
 
     if q.data == "CLIENTS::ADD":
-        await q.edit_message_text("➕ Nouveau client\n\nNom du client ? (ex: HOCIPHONE)")
+        await ui_show(update, context, "➕ Nouveau client\n\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour clients", callback_data="BACK::CLIENTS")]
+        ]))
         return CLIENT_ADD_NAME
 
     if q.data == "CLIENTS::IMPORT":
-        await q.edit_message_text(
+        await ui_show(
+            update,
+            context,
             "📥 Import clients\n\n"
             "Colle tes clients (1 par ligne) au format :\n"
             "NOM | ADRESSE | CP | VILLE | SIRET | TVA\n\n"
             "Si TVA n’existe pas, mets '-'.\n\n"
             "Exemple :\n"
             "HOCIPHONE | 160 chemin... | 13015 | Marseille | 4097... | -\n\n"
-            "➡️ Colle maintenant ton bloc."
+            "➡️ Colle maintenant ton bloc (réponds dans le chat).",
+            InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour clients", callback_data="BACK::CLIENTS")]])
         )
         return IMPORT_CLIENTS
 
     if q.data == "BACK::MENU":
-        return await go_menu(update, edit=True)
+        return await go_menu(update, context)
 
     return CLIENTS_MENU
 
 
 async def back_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
-    await update.callback_query.edit_message_text("👥 Clients — choisis une action :", reply_markup=clients_menu_keyboard())
+    await ui_show(update, context, "👥 Clients — choisis une action :", clients_menu_keyboard())
     return CLIENTS_MENU
 
 
@@ -382,25 +343,35 @@ async def inv_client_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     if q.data == "INVCLIENT::SEARCH":
-        await q.edit_message_text("🔎 Recherche client\nTape le nom / email / tel :")
+        await ui_show(update, context, "🔎 Recherche client\nTape le nom / email / tel (réponds dans le chat) :", InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour", callback_data="MENU::NEW_INV")],
+            [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        ]))
         return CLIENT_SEARCH_FOR_INV
 
     if q.data == "INVCLIENT::LIST":
         clients = db.list_clients(200)
         if not clients:
-            await q.edit_message_text("Aucun client enregistré.", reply_markup=main_menu_keyboard())
+            await ui_show(update, context, "Aucun client enregistré.", main_menu_keyboard())
             return MENU
         kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in clients[:40]]
-        kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
-        await q.edit_message_text("📋 Choisis un client :", reply_markup=InlineKeyboardMarkup(kb))
+        kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="MENU::NEW_INV")])
+        kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
+        await ui_show(update, context, "📋 Choisis un client :", InlineKeyboardMarkup(kb))
         return CLIENT_CHOOSE_FOR_INV
 
     if q.data == "INVCLIENT::ADD":
-        await q.edit_message_text("➕ Nouveau client\nNom du client ?")
+        await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour", callback_data="MENU::NEW_INV")],
+            [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        ]))
         return CLIENT_ADD_NAME
 
     if q.data == "BACK::MENU":
-        return await go_menu(update, edit=True)
+        return await go_menu(update, context)
+
+    if q.data == "MENU::NEW_INV":
+        return await menu_click(update, context)
 
     return CLIENT_CHOOSE_FOR_INV
 
@@ -413,8 +384,9 @@ async def client_search_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
         return CLIENT_SEARCH_FOR_INV
 
     kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in results]
-    kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
-    await update.message.reply_text("Résultats :", reply_markup=InlineKeyboardMarkup(kb))
+    kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="MENU::NEW_INV")])
+    kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
+    await ui_show(update, context, "Résultats :", InlineKeyboardMarkup(kb))
     return CLIENT_CHOOSE_FOR_INV
 
 
@@ -427,7 +399,7 @@ async def client_select_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await q.edit_message_text("🧾 Facture — choisis une description :", reply_markup=presets_keyboard())
+    await ui_show(update, context, "🧾 Facture — choisis une description :", presets_keyboard())
     return INV_DESC
 
 
@@ -438,13 +410,17 @@ async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nom vide. Réessaie.")
         return CLIENT_ADD_NAME
     context.user_data["new_client"] = {"name": name}
-    await update.message.reply_text("Adresse ligne 1 ?")
+    await ui_show(update, context, "Adresse ligne 1 ? (réponds dans le chat)", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+    ]))
     return CLIENT_ADD_ADDR
 
 
 async def add_client_addr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_client"]["address1"] = (update.message.text or "").strip()
-    await update.message.reply_text("Code postal + Ville ? (ex: 13015 Marseille)")
+    await ui_show(update, context, "Code postal + Ville ? (ex: 13015 Marseille)", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+    ]))
     return CLIENT_ADD_CITYZIP
 
 
@@ -453,7 +429,9 @@ async def add_client_cityzip(update: Update, context: ContextTypes.DEFAULT_TYPE)
     parts = txt.split()
     context.user_data["new_client"]["zip"] = parts[0] if parts else ""
     context.user_data["new_client"]["city"] = " ".join(parts[1:]) if len(parts) > 1 else ""
-    await update.message.reply_text("SIRET du client ? (ou '-' si rien)")
+    await ui_show(update, context, "SIRET du client ? (ou '-' si rien)", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+    ]))
     return CLIENT_ADD_SIRET
 
 
@@ -462,7 +440,9 @@ async def add_client_siret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if siret == "-":
         siret = ""
     context.user_data["new_client"]["siret"] = siret
-    await update.message.reply_text("TVA du client ? (ou '-' si rien)")
+    await ui_show(update, context, "TVA du client ? (ou '-' si rien)", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+    ]))
     return CLIENT_ADD_TVA
 
 
@@ -487,10 +467,7 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await update.message.reply_text(
-        f"✅ Client ajouté: {client.get('name')}\n\n🧾 Maintenant choisis une description :",
-        reply_markup=presets_keyboard()
-    )
+    await ui_show(update, context, f"✅ Client ajouté: {client.get('name')}\n\n🧾 Maintenant choisis une description :", presets_keyboard())
     return INV_DESC
 
 
@@ -501,11 +478,16 @@ async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, val = q.data.split("::", 1)
 
     if val == "MANUAL":
-        await q.edit_message_text("Tape la description (ex: Prestation de services)")
+        await ui_show(update, context, "Tape la description (réponds dans le chat) :", InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour", callback_data="BACK::DESC")],
+            [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        ]))
         return INV_DESC
 
     context.user_data["description"] = val
-    await q.edit_message_text("💶 Montant à facturer (TTC – TVA non applicable)")
+    await ui_show(update, context, "💶 Montant à facturer (TTC – TVA non applicable) :", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+    ]))
     return INV_PRICE
 
 
@@ -515,7 +497,9 @@ async def desc_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Description vide. Réessaie.")
         return INV_DESC
     context.user_data["description"] = desc
-    await update.message.reply_text("💶 Montant à facturer (TTC – TVA non applicable)")
+    await ui_show(update, context, "💶 Montant à facturer (TTC – TVA non applicable) :", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+    ]))
     return INV_PRICE
 
 
@@ -559,7 +543,7 @@ async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
 
-    await update.message.reply_text(recap_message(context), reply_markup=kb)
+    await ui_show(update, context, recap_message(context), kb)
     return INV_CONFIRM
 
 
@@ -568,11 +552,9 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     if q.data == "INV::FORCE_NUMBER":
-        await q.edit_message_text(
-            "Tape le numéro:\n"
-            "- soit juste le chiffre (ex: 31)\n"
-            "- soit le format complet (ex: FACTURE-2026-031)\n"
-        )
+        await ui_show(update, context,
+                      "Tape le numéro:\n- soit juste le chiffre (ex: 31)\n- soit le format complet (ex: FACTURE-2026-031)",
+                      InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]]))
         return INV_FORCE_NUMBER
 
     if q.data != "INV::CONFIRM":
@@ -627,11 +609,10 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         size = 0
 
     if size < 800:
-        await q.edit_message_text(
-            f"❌ PDF invalide (taille: {size} octets).\n"
-            "➡️ Vérifie : reportlab dans requirements.txt + logo_path."
-        )
-        return await go_menu(update)
+        await ui_show(update, context,
+                      f"❌ PDF invalide (taille: {size} octets).\n➡️ Vérifie : reportlab dans requirements.txt + logo_path.",
+                      InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]]))
+        return MENU
 
     db.save_invoice(
         client_id=client["id"],
@@ -650,11 +631,16 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf_path=str(pdf_path)
     )
 
-    await q.edit_message_text("✅ Facture générée. Envoi du PDF…")
+    # UI
+    await ui_show(update, context, "✅ Facture générée. Envoi du PDF…", InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+    ]))
+
+    # Envoi du PDF
     with open(pdf_path, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
 
-    return await go_menu(update)
+    return await go_menu(update, context)
 
 
 async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -673,13 +659,11 @@ async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return INV_FORCE_NUMBER
 
     context.user_data["number"] = number
-
-    kb = InlineKeyboardMarkup([
+    await ui_show(update, context, recap_message(context), InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
         [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
-        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
-    ])
-    await update.message.reply_text(recap_message(context), reply_markup=kb)
+        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+    ]))
     return INV_CONFIRM
 
 
@@ -720,8 +704,8 @@ async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.client_folder(client)
         ok += 1
 
-    await update.message.reply_text(f"✅ Import terminé\nAjoutés: {ok}\nIgnorés: {bad}")
-    return await go_menu(update)
+    await ui_show(update, context, f"✅ Import terminé\nAjoutés: {ok}\nIgnorés: {bad}", clients_menu_keyboard())
+    return CLIENTS_MENU
 
 
 # ---------- MES FACTURES ----------
@@ -730,7 +714,10 @@ async def invoices_client_pick(update: Update, context: ContextTypes.DEFAULT_TYP
     await q.answer()
 
     if q.data == "INVCLMODE::SEARCH":
-        await q.edit_message_text("🔎 Recherche client (Mes factures)\nTape le nom / email / tel :")
+        await ui_show(update, context, "🔎 Recherche client (Mes factures)\nTape le nom / email / tel :", InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Retour", callback_data="MENU::INVOICES")],
+            [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        ]))
         return INVOICES_CLIENT_PICK
 
     if q.data.startswith("INVCL::"):
@@ -739,19 +726,23 @@ async def invoices_client_pick(update: Update, context: ContextTypes.DEFAULT_TYP
 
         invs = db.list_invoices_for_client(client_id, limit=50)
         if not invs:
-            await q.edit_message_text(
-                f"🗂️ {client.get('name')} — aucune facture.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour", callback_data="MENU::INVOICES")]])
-            )
+            await ui_show(update, context, f"🗂️ {client.get('name')} — aucune facture.", InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Retour", callback_data="MENU::INVOICES")],
+                [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+            ]))
             return INVOICES_CLIENT_PICK
 
         kb = [[invoice_to_btn(inv)] for inv in invs[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour clients", callback_data="MENU::INVOICES")])
-        await q.edit_message_text(f"🗂️ Factures — {client.get('name')} :", reply_markup=InlineKeyboardMarkup(kb))
+        kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
+        await ui_show(update, context, f"🗂️ Factures — {client.get('name')} :", InlineKeyboardMarkup(kb))
         return INVOICES_LIST
 
     if q.data == "BACK::MENU":
-        return await go_menu(update, edit=True)
+        return await go_menu(update, context)
+
+    if q.data == "MENU::INVOICES":
+        return await menu_click(update, context)
 
     return INVOICES_CLIENT_PICK
 
@@ -764,8 +755,9 @@ async def invoices_search_text(update: Update, context: ContextTypes.DEFAULT_TYP
         return INVOICES_CLIENT_PICK
 
     kb = [[client_to_btn(c, prefix="INVCL::")] for c in results]
-    kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
-    await update.message.reply_text("Résultats :", reply_markup=InlineKeyboardMarkup(kb))
+    kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="MENU::INVOICES")])
+    kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
+    await ui_show(update, context, "Résultats :", InlineKeyboardMarkup(kb))
     return INVOICES_CLIENT_PICK
 
 
@@ -782,15 +774,19 @@ async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
     inv_id = int(q.data.split("::")[1])
     inv = db.get_invoice(inv_id)
     if not inv:
-        await q.edit_message_text("Facture introuvable.")
-        return await go_menu(update)
+        await ui_show(update, context, "Facture introuvable.", InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+        ]))
+        return MENU
 
     pdf_path = inv.get("pdf_path", "")
     p = Path(pdf_path)
 
     if not pdf_path or not p.exists():
-        await q.edit_message_text(f"PDF introuvable : {pdf_path}")
-        return await go_menu(update)
+        await ui_show(update, context, f"PDF introuvable : {pdf_path}", InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
+        ]))
+        return MENU
 
     filename = f"{inv.get('number','FACTURE')}.pdf"
     with open(p, "rb") as f:
@@ -800,7 +796,7 @@ async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Commande inconnue. Tape /start", reply_markup=persistent_menu_keyboard())
+    await update.message.reply_text("Commande inconnue. Tape /start")
 
 
 def main():
@@ -817,75 +813,48 @@ def main():
             MENU: [
                 CallbackQueryHandler(menu_click, pattern=r"^MENU::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
-                # ✅ ACTIVE le menu permanent
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
 
             CLIENTS_MENU: [
                 CallbackQueryHandler(clients_menu_click, pattern=r"^(CLIENTS::|BACK::MENU$)"),
                 CallbackQueryHandler(back_clients, pattern=r"^BACK::CLIENTS$"),
-                # ✅ menu permanent utilisable ici aussi
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
 
             CLIENT_CHOOSE_FOR_INV: [
-                CallbackQueryHandler(inv_client_mode, pattern=r"^(INVCLIENT::|BACK::MENU$)"),
+                CallbackQueryHandler(inv_client_mode, pattern=r"^(INVCLIENT::|BACK::MENU$|MENU::NEW_INV)"),
                 CallbackQueryHandler(client_select_for_inv, pattern=r"^INVCLIENTSEL::"),
-                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
             CLIENT_SEARCH_FOR_INV: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, client_search_for_inv),
             ],
 
-            CLIENT_ADD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name),
-            ],
-            CLIENT_ADD_ADDR: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr),
-            ],
-            CLIENT_ADD_CITYZIP: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip),
-            ],
-            CLIENT_ADD_SIRET: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret),
-            ],
-            CLIENT_ADD_TVA: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva),
-            ],
+            CLIENT_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name)],
+            CLIENT_ADD_ADDR: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr)],
+            CLIENT_ADD_CITYZIP: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip)],
+            CLIENT_ADD_SIRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret)],
+            CLIENT_ADD_TVA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva)],
 
             INV_DESC: [
                 CallbackQueryHandler(desc_pick, pattern=r"^PRESET::"),
-                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
+                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
-            INV_PRICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, price_step),
-            ],
+            INV_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, price_step)],
             INV_CONFIRM: [
                 CallbackQueryHandler(inv_confirm_click, pattern=r"^INV::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
-            INV_FORCE_NUMBER: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, force_number),
-            ],
+            INV_FORCE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, force_number)],
 
-            IMPORT_CLIENTS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients),
-            ],
+            IMPORT_CLIENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients)],
 
             INVOICES_CLIENT_PICK: [
-                CallbackQueryHandler(invoices_client_pick, pattern=r"^(INVCL::|INVCLMODE::|BACK::MENU$)"),
+                CallbackQueryHandler(invoices_client_pick, pattern=r"^(INVCL::|INVCLMODE::|BACK::MENU$|MENU::INVOICES)"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invoices_search_text),
-                CallbackQueryHandler(menu_click, pattern=r"^MENU::INVOICES$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
             INVOICES_LIST: [
-                CallbackQueryHandler(invoice_open, pattern=r"^(INVFILE::|MENU::INVOICES$)"),
+                CallbackQueryHandler(invoice_open, pattern=r"^(INVFILE::|MENU::INVOICES)"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
         },
         fallbacks=[CommandHandler("start", start)],
