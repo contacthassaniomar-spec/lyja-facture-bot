@@ -24,7 +24,7 @@ def _fmt_money(x: float) -> str:
 
 def draw_invoice_pdf(pdf_path: Path, company: dict, client: dict, invoice: dict, logo_path: Path | None = None):
     pdf_path = Path(pdf_path)
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)  # ✅ IMPORTANT
+    pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
     W, H = A4
     c = canvas.Canvas(str(pdf_path), pagesize=A4)
@@ -62,7 +62,7 @@ def draw_invoice_pdf(pdf_path: Path, company: dict, client: dict, invoice: dict,
     c.drawString(x_right, y0, f"Date de facturation: {issue_str}")
     c.drawString(x_right, y0 - 8 * mm, f"Échéance: {due}")
 
-    # ✅ demandé : cette ligne sous TES infos (pas sous le client)
+    # ✅ Type d’opération sous TES infos
     c.setFont("Helvetica-Bold", 11)
     c.drawString(x_right, y0 - 16 * mm, f"Type d’opération: {op_type}")
     c.setFont("Helvetica", 11)
@@ -73,19 +73,30 @@ def draw_invoice_pdf(pdf_path: Path, company: dict, client: dict, invoice: dict,
             lp = Path(logo_path)
             if lp.exists():
                 img = ImageReader(str(lp))
-                # zone logo en haut à gauche (dans la page blanche)
-                c.drawImage(img, left_band_w + margin, H - 55 * mm, width=35 * mm, height=18 * mm, mask="auto")
+                c.drawImage(
+                    img,
+                    left_band_w + margin,
+                    H - 55 * mm,
+                    width=35 * mm,
+                    height=18 * mm,
+                    mask="auto"
+                )
         except Exception:
             pass
 
     # --- Company block (TES infos) ---
-    comp_name = _get(company, "name", "nom", default="Société")
-    comp_addr = _get(company, "address1", "adresse", default="")
-    comp_zip = _get(company, "zip", "zip_code", "cp", default="")
-    comp_city = _get(company, "city", "ville", default="")
-    comp_country = _get(company, "country", "pays", default="")
+    comp_brand = _get(company, "brand", default="")
+    comp_legal = _get(company, "legal_name", default="")
+    comp_name = comp_brand or comp_legal or "Société"
+
+    comp_addr = _get(company, "address1", default="")
+    comp_zip = _get(company, "zip", default="")
+    comp_city = _get(company, "city", default="")
+    comp_country = _get(company, "country", default="")
+    comp_phone = _get(company, "phone", default="")
+    comp_email = _get(company, "email", default="")
     comp_siret = _get(company, "siret", default="")
-    comp_tva_note = _get(company, "tva_note", default="TVA non applicable, art. 293 B du CGI")
+    comp_vat_notice = _get(company, "vat_notice", default="TVA non applicable, art. 293 B du CGI")
 
     x = left_band_w + margin
     y = H - 68 * mm
@@ -95,19 +106,32 @@ def draw_invoice_pdf(pdf_path: Path, company: dict, client: dict, invoice: dict,
 
     c.setFont("Helvetica", 11)
     yy = y - 6 * mm
+
+    # Optionnel : afficher le legal_name sous le brand si différent
+    if comp_brand and comp_legal and comp_legal != comp_brand:
+        c.drawString(x, yy, comp_legal)
+        yy -= 6 * mm
+
     if comp_addr:
         c.drawString(x, yy, comp_addr); yy -= 6 * mm
+
     line_city = " ".join([p for p in [str(comp_zip).strip(), str(comp_city).strip()] if p])
     if line_city:
         c.drawString(x, yy, line_city); yy -= 6 * mm
+
     if comp_country:
         c.drawString(x, yy, comp_country); yy -= 6 * mm
 
-    # ✅ demandé : SIRET + TVA sous TES infos (pas sous client)
+    if comp_phone:
+        c.drawString(x, yy, f"Tél: {comp_phone}"); yy -= 6 * mm
+    if comp_email:
+        c.drawString(x, yy, comp_email); yy -= 6 * mm
+
+    # ✅ SIRET + TVA notice sous TES infos
     if comp_siret:
         c.drawString(x, yy, f"Numéro de SIRET {comp_siret}"); yy -= 6 * mm
-    if comp_tva_note:
-        c.drawString(x, yy, comp_tva_note); yy -= 6 * mm
+    if comp_vat_notice:
+        c.drawString(x, yy, comp_vat_notice); yy -= 6 * mm
 
     # --- Client block ---
     c.setFillColor(light)
@@ -177,9 +201,8 @@ def draw_invoice_pdf(pdf_path: Path, company: dict, client: dict, invoice: dict,
 
     # --- Footer ---
     c.setFont("Helvetica", 9)
-    footer = _get(company, "footer", default="TVA non applicable, art. 293 B du CGI")
+    footer = comp_vat_notice or "TVA non applicable, art. 293 B du CGI"
     c.drawString(left_band_w + margin, 15 * mm, footer)
 
-    # ✅ CRITIQUE : sinon PDF vide sur certains cas
     c.showPage()
     c.save()
