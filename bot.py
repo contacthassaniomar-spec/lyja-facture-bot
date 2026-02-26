@@ -4,9 +4,7 @@ from pathlib import Path
 from datetime import date
 from decimal import Decimal
 
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
@@ -18,14 +16,18 @@ from pdf_gen import draw_invoice_pdf
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
+
 def load_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
+
 CFG = load_config()
+
 
 def get_logo_path() -> Path:
     p = CFG.get("pdf", {}).get("logo_path", "assets/logo.png")
     return (BASE_DIR / p).resolve()
+
 
 def admin_allowed(user_id: int) -> bool:
     if not CFG.get("bot", {}).get("admin_only", False):
@@ -33,9 +35,11 @@ def admin_allowed(user_id: int) -> bool:
     admin_id = os.getenv("OWNER_TELEGRAM_ID", "")
     return admin_id.isdigit() and int(admin_id) == int(user_id)
 
+
 def money_to_float(text: str) -> float:
-    t = (text or "").strip().replace("€","").replace(" ", "").replace(",", ".")
+    t = (text or "").strip().replace("€", "").replace(" ", "").replace(",", ".")
     return float(Decimal(t))
+
 
 # ---------------- States ----------------
 (
@@ -54,12 +58,14 @@ def money_to_float(text: str) -> float:
     IMPORT_CLIENTS
 ) = range(13)
 
+
 # ---------------- Keyboards ----------------
 def presets_keyboard():
-    presets = CFG["invoice"]["description_presets"]
+    presets = CFG.get("invoice", {}).get("description_presets", [])
     rows = [[InlineKeyboardButton(p, callback_data=f"PRESET::{p}")] for p in presets]
     rows.append([InlineKeyboardButton("✍️ Saisie manuelle", callback_data="PRESET::MANUAL")])
     return InlineKeyboardMarkup(rows)
+
 
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
@@ -69,11 +75,13 @@ def main_menu_keyboard():
         [InlineKeyboardButton("📥 Import clients", callback_data="MENU::IMPORT_CLIENTS")]
     ])
 
+
 def client_to_btn(c):
-    label = c["name"]
+    label = c.get("name") or c.get("nom") or "Client"
     if c.get("city"):
         label += f" — {c['city']}"
     return InlineKeyboardButton(label[:60], callback_data=f"CLIENT::{c['id']}")
+
 
 # ---------------- Handlers ----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -85,6 +93,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bienvenue 👋\nChoisis une action :", reply_markup=main_menu_keyboard())
     return MENU
 
+
 async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -92,11 +101,14 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "MENU::NEW_INV":
         context.user_data.clear()
-        await q.edit_message_text("Pour créer une facture, choisis d'abord le client :", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔎 Rechercher", callback_data="CLIENTMODE::SEARCH")],
-            [InlineKeyboardButton("➕ Ajouter un client", callback_data="CLIENTMODE::ADD")],
-            [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
-        ]))
+        await q.edit_message_text(
+            "Pour créer une facture, choisis d'abord le client :",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔎 Rechercher", callback_data="CLIENTMODE::SEARCH")],
+                [InlineKeyboardButton("➕ Ajouter un client", callback_data="CLIENTMODE::ADD")],
+                [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
+            ])
+        )
         return CLIENT_CHOOSE
 
     if action == "MENU::LIST_CLIENTS":
@@ -129,11 +141,13 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
 
+
 async def back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
+
 
 async def client_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -149,9 +163,10 @@ async def client_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return CLIENT_CHOOSE
 
+
 async def client_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = (update.message.text or "").strip()
-    results = db.search_clients(q, 20)
+    query = (update.message.text or "").strip()
+    results = db.search_clients(query, 20)
     if not results:
         await update.message.reply_text("Aucun résultat. Réessaie.")
         return CLIENT_SEARCH
@@ -161,16 +176,19 @@ async def client_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Résultats :", reply_markup=InlineKeyboardMarkup(kb))
     return CLIENT_CHOOSE
 
+
 async def client_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     cid = int(q.data.split("::")[1])
     client = db.get_client(cid)
+
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
     await q.edit_message_text("Choisis une description (ou saisie manuelle) :", reply_markup=presets_keyboard())
     return INV_DESC
+
 
 async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = (update.message.text or "").strip()
@@ -181,10 +199,12 @@ async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Adresse ligne 1 ?")
     return CLIENT_ADD_ADDR
 
+
 async def add_client_addr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_client"]["address1"] = (update.message.text or "").strip()
     await update.message.reply_text("Code postal + Ville ? (ex: 13015 Marseille)")
     return CLIENT_ADD_CITYZIP
+
 
 async def add_client_cityzip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip()
@@ -194,6 +214,7 @@ async def add_client_cityzip(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text("SIRET du client ? (ou '-' si rien)")
     return CLIENT_ADD_SIRET
 
+
 async def add_client_siret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     siret = (update.message.text or "").strip()
     if siret == "-":
@@ -202,27 +223,31 @@ async def add_client_siret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("TVA du client ? (ou '-' si rien)")
     return CLIENT_ADD_TVA
 
+
 async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tva = (update.message.text or "").strip()
     if tva == "-":
         tva = ""
+
     nc = context.user_data["new_client"]
     cid = db.add_client(
         name=nc["name"],
-        address1=nc.get("address1",""),
-        zip_code=nc.get("zip",""),
-        city=nc.get("city",""),
+        address1=nc.get("address1", ""),
+        zip_code=nc.get("zip", ""),
+        city=nc.get("city", ""),
         country="France",
-        siret=nc.get("siret",""),
+        siret=nc.get("siret", ""),
         tva=tva
     )
     client = db.get_client(cid)
     db.client_folder(client)  # crée le dossier client
+
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await update.message.reply_text(f"✅ Client ajouté: {client['name']}\nChoisis une description :", reply_markup=presets_keyboard())
+    await update.message.reply_text(f"✅ Client ajouté: {client.get('name')}\nChoisis une description :", reply_markup=presets_keyboard())
     return INV_DESC
+
 
 async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -237,6 +262,7 @@ async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("Montant à facturer (TTC – TVA non applicable)")
     return INV_PRICE
 
+
 async def desc_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     desc = (update.message.text or "").strip()
     if not desc:
@@ -246,40 +272,50 @@ async def desc_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Montant à facturer (TTC – TVA non applicable)")
     return INV_PRICE
 
-async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        price = money_to_float(update.message.text)
-    except:
-        await update.message.reply_text("Prix invalide. Exemple: 738 ou 738,00")
-        return INV_PRICE
 
-    context.user_data["unit_price"] = price
-    context.user_data["qty"] = float(CFG["invoice"]["qty_default"])
-    context.user_data["unit"] = CFG["invoice"]["unit_default"]
-    context.user_data["tax_rate"] = 0.0
-
-    prefix = CFG["invoice"]["number_prefix"]
-    use_year = bool(CFG["invoice"].get("use_year", True))
-    number = db.next_invoice_number(prefix, date.today(), use_year=use_year)
-    context.user_data["number"] = number
-
+def recap_message(context) -> str:
     client = context.user_data["client"]
+    price = context.user_data["unit_price"]
+    number = context.user_data["number"]
+    desc = context.user_data["description"]
+
     msg = (
         f"📌 Récap:\n"
-        f"Client: {client['name']}\n"
-        f"Description: {context.user_data['description']}\n"
-        f"Prix HT: {price:.2f} €\n"
+        f"Client: {client.get('name')}\n"
+        f"Description: {desc}\n"
+        f"Montant TTC (TVA non applicable): {price:.2f} €\n"
         f"N°: {number}\n\n"
         f"✅ Confirmer ? (ou modifier le numéro)"
     ).replace(".", ",")
+    return msg
+
+
+async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        price = money_to_float(update.message.text)
+    except Exception:
+        await update.message.reply_text("Montant invalide. Exemple: 2600 ou 2600,00")
+        return INV_PRICE
+
+    context.user_data["unit_price"] = price
+    context.user_data["qty"] = float(CFG.get("invoice", {}).get("qty_default", 1))
+    context.user_data["unit"] = CFG.get("invoice", {}).get("unit_default", "forfait")
+    context.user_data["tax_rate"] = 0.0  # TVA non applicable
+
+    prefix = CFG.get("invoice", {}).get("number_prefix", "FACTURE")
+    use_year = bool(CFG.get("invoice", {}).get("use_year", True))
+    number = db.next_invoice_number(prefix, date.today(), use_year=use_year)
+    context.user_data["number"] = number
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
         [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
         [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
     ])
-    await update.message.reply_text(msg, reply_markup=kb)
+
+    await update.message.reply_text(recap_message(context), reply_markup=kb)
     return INV_CONFIRM
+
 
 async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -297,27 +333,30 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return INV_CONFIRM
 
     client = context.user_data["client"]
-    company = CFG["company"]
+    company = CFG.get("company", {})
 
     number = context.user_data["number"]
     issue = date.today()
-    due = CFG["invoice"]["due_default"]
-    op = CFG["invoice"]["operation_type_default"]
+    due = CFG.get("invoice", {}).get("due_default", "À réception")
+    op = CFG.get("invoice", {}).get("operation_type_default", "Prestation de services")
     desc = context.user_data["description"]
     qty = context.user_data["qty"]
     unit = context.user_data["unit"]
     unit_price = context.user_data["unit_price"]
     tax_rate = context.user_data["tax_rate"]
 
-    total_ht = float(qty) * float(unit_price)
+    # TTC = montant saisi (TVA non applicable)
+    total_ttc = float(qty) * float(unit_price)
+    total_ht = total_ttc
     total_tva = 0.0
-    total_ttc = total_ht
 
-    folder = db.client_folder(client)
+    # Dossiers : data/clients/<CLIENT>/YYYY/<FACTURE>.pdf
+    folder = db.client_folder(client) / str(issue.year)
+    folder.mkdir(parents=True, exist_ok=True)  # ✅ IMPORTANT
     pdf_path = folder / f"{number}.pdf"
 
     invoice_doc = {
-        "title": f"{CFG['invoice']['number_prefix']} - {number}",
+        "title": f"{CFG.get('invoice', {}).get('number_prefix', 'FACTURE')} - {number}",
         "number": number,
         "issue_date": issue,
         "due": due,
@@ -335,6 +374,7 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logo = get_logo_path()
     draw_invoice_pdf(pdf_path, company, client, invoice_doc, logo)
 
+    # Sauvegarde DB
     db.save_invoice(
         client_id=client["id"],
         number=number,
@@ -357,9 +397,10 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
 
+
 async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip()
-    prefix = CFG["invoice"]["number_prefix"]
+    prefix = CFG.get("invoice", {}).get("number_prefix", "FACTURE")
     year = date.today().year
 
     if txt.upper().startswith(prefix.upper()):
@@ -368,13 +409,20 @@ async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             n = int(txt)
             number = f"{prefix}-{year}-{n:03d}"
-        except:
+        except Exception:
             await update.message.reply_text("Numéro invalide. Exemple: 31 ou FACTURE-2026-031")
             return INV_FORCE_NUMBER
 
     context.user_data["number"] = number
-    await update.message.reply_text(f"✅ Numéro mis à jour: {number}\nClique sur “Générer PDF” dans le récap.")
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
+        [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
+        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
+    ])
+    await update.message.reply_text(recap_message(context), reply_markup=kb)
     return INV_CONFIRM
+
 
 async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (update.message.text or "").strip()
@@ -394,8 +442,10 @@ async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
         siret = parts[4] if len(parts) > 4 else ""
         tva = parts[5] if len(parts) > 5 else ""
 
-        if siret == "-": siret = ""
-        if tva == "-": tva = ""
+        if siret == "-":
+            siret = ""
+        if tva == "-":
+            tva = ""
 
         cid = db.add_client(
             name=name,
@@ -416,8 +466,10 @@ async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     return MENU
 
+
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Commande inconnue. Tape /start")
+
 
 def main():
     token = os.getenv("BOT_TOKEN", "").strip()
@@ -465,6 +517,7 @@ def main():
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
