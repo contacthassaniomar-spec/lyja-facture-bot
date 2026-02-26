@@ -294,3 +294,27 @@ def save_invoice(
     iid = c.lastrowid
     conn.close()
     return int(iid)
+
+
+# ✅ NOUVEAU : récupérer les factures pour "Mes factures"
+def list_invoices_for_client(client_id: int, limit: int = 80):
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM invoices
+        WHERE client_id = ?
+        ORDER BY issue_date DESC, id DESC
+        LIMIT ?
+    """, (int(client_id), int(limit)))
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_invoice(invoice_id: int):
+    conn = _conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM invoices WHERE id=?", (int(invoice_id),))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
