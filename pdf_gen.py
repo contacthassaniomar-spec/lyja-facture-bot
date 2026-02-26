@@ -1,208 +1,293 @@
+# pdf_gen.py
+from __future__ import annotations
+
 from pathlib import Path
 from datetime import date
+from typing import Dict, Any
 
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
-from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
+from reportlab.platypus import Table, TableStyle
 
 
-def _get(d: dict, *keys, default=""):
+def _fmt_money(v: float) -> str:
+    # format français: 1100,00 €
+    s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
+    return f"{s} €"
+
+
+def _safe(d: Dict[str, Any], *keys: str, default: str = "") -> str:
     for k in keys:
-        if k in d and d[k] not in (None, ""):
-            return d[k]
+        v = d.get(k)
+        if v is not None and str(v).strip() != "":
+            return str(v)
     return default
 
 
-def _fmt_money(x: float) -> str:
-    try:
-        return f"{float(x):,.2f} €".replace(",", "X").replace(".", ",").replace("X", " ")
-    except Exception:
-        return "0,00 €"
+def draw_invoice_pdf(
+    out_path: Path,
+    company: Dict[str, Any],
+    client: Dict[str, Any],
+    inv: Dict[str, Any],
+    logo_path: Path | None = None,
+):
+    """
+    Génère une facture PDF A4.
+    - company: dict depuis config.json "company"
+    - client: dict depuis db
+    - inv: dict facture (number, issue_date, due, operation_type, description, qty, unit, unit_price, total_ht, total_tva, total_ttc...)
+    - logo_path: Path vers assets/logo.png
+    """
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-
-def draw_invoice_pdf(pdf_path: Path, company: dict, client: dict, invoice: dict, logo_path: Path | None = None):
-    pdf_path = Path(pdf_path)
-    pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
+    c = canvas.Canvas(str(out_path), pagesize=A4)
     W, H = A4
-    c = canvas.Canvas(str(pdf_path), pagesize=A4)
 
-    # --- Style ---
-    left_band_w = 18 * mm
+    # --- Thème / couleurs ---
+    # Tu peux changer ici si tu veux une autre esthétique
+    BAND_COLOR = colors.HexColor("#6D28D9")      # violet (bande gauche)
+    ACCENT = colors.HexColor("#111827")          # quasi noir
+    LIGHT_BG = colors.HexColor("#F3F4F6")        # gris clair
+    MID_GREY = colors.HexColor("#6B7280")
+
     margin = 18 * mm
-    gray = colors.HexColor("#333333")
-    light = colors.HexColor("#F2F2F2")
+    band_w = 18 * mm
 
-    # --- Left band ---
-    c.setFillColor(colors.HexColor("#111111"))
-    c.rect(0, 0, left_band_w, H, fill=1, stroke=0)
+    # Fond blanc
+    c.setFillColor(colors.white)
+    c.rect(0, 0, W, H, stroke=0, fill=1)
 
-    # --- Header title ---
-    title = _get(invoice, "title", default="FACTURE")
-    c.setFillColor(gray)
-    c.setFont("Helvetica-Bold", 24)
-    c.drawString(left_band_w + margin, H - 28 * mm, title)
+    # Bande gauche colorée
+    c.setFillColor(BAND_COLOR)
+    c.rect(0, 0, band_w, H, stroke=0, fill=1)
 
-    # --- Dates / infos facture (à droite) ---
-    issue_date = _get(invoice, "issue_date", default=date.today())
-    if isinstance(issue_date, date):
-        issue_str = issue_date.strftime("%d/%m/%Y")
-    else:
-        issue_str = str(issue_date)
+    # --- Header ---
+    top_y = H - margin
 
-    due = _get(invoice, "due", default="À réception")
-    op_type = _get(invoice, "operation_type", default="Prestation de services")
-
-    c.setFont("Helvetica", 11)
-    x_right = W - margin - 75 * mm
-    y0 = H - 40 * mm
-
-    c.drawString(x_right, y0, f"Date de facturation: {issue_str}")
-    c.drawString(x_right, y0 - 8 * mm, f"Échéance: {due}")
-
-    # ✅ Type d’opération sous TES infos
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(x_right, y0 - 16 * mm, f"Type d’opération: {op_type}")
-    c.setFont("Helvetica", 11)
-
-    # --- Logo (si présent) ---
+    # Logo (en haut à gauche dans la zone blanche, à côté de la bande)
+    logo_drawn = False
     if logo_path:
         try:
             lp = Path(logo_path)
             if lp.exists():
-                img = ImageReader(str(lp))
-                c.drawImage(
-                    img,
-                    left_band_w + margin,
-                    H - 55 * mm,
-                    width=35 * mm,
-                    height=18 * mm,
-                    mask="auto"
-                )
+                # zone logo
+                x = band_w + margin
+                y = H - margin - 22 * mm
+                c.drawImage(str(lp), x, y, width=35 * mm, height=18 * mm, mask="auto", preserveAspectRatio=True)
+                logo_drawn = True
         except Exception:
-            pass
+            logo_drawn = False
 
-    # --- Company block (TES infos) ---
-    comp_brand = _get(company, "brand", default="")
-    comp_legal = _get(company, "legal_name", default="")
-    comp_name = comp_brand or comp_legal or "Société"
+    # Nom de marque / société
+    brand = _safe(company, "brand", "legal_name", "name", default="Société")
+    legal_name = _safe(company, "legal_name", "brand", "name", default=brand)
 
-    comp_addr = _get(company, "address1", default="")
-    comp_zip = _get(company, "zip", default="")
-    comp_city = _get(company, "city", default="")
-    comp_country = _get(company, "country", default="")
-    comp_phone = _get(company, "phone", default="")
-    comp_email = _get(company, "email", default="")
-    comp_siret = _get(company, "siret", default="")
-    comp_vat_notice = _get(company, "vat_notice", default="TVA non applicable, art. 293 B du CGI")
+    # Titre FACTURE (droite)
+    c.setFillColor(ACCENT)
+    c.setFont("Helvetica-Bold", 26)
+    c.drawRightString(W - margin, top_y, "FACTURE")
 
-    x = left_band_w + margin
-    y = H - 68 * mm
-
+    # Numéro (droite)
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(x, y, comp_name)
+    c.drawRightString(W - margin, top_y - 10 * mm, f"N° {inv.get('number', '')}")
 
-    c.setFont("Helvetica", 11)
-    yy = y - 6 * mm
+    # Ligne fine
+    c.setStrokeColor(colors.HexColor("#E5E7EB"))
+    c.setLineWidth(1)
+    c.line(band_w + margin, top_y - 14 * mm, W - margin, top_y - 14 * mm)
 
-    # Optionnel : afficher le legal_name sous le brand si différent
-    if comp_brand and comp_legal and comp_legal != comp_brand:
-        c.drawString(x, yy, comp_legal)
-        yy -= 6 * mm
+    # Bloc société (gauche)
+    left_x = band_w + margin
+    y0 = top_y - (28 * mm if logo_drawn else 18 * mm)
 
-    if comp_addr:
-        c.drawString(x, yy, comp_addr); yy -= 6 * mm
-
-    line_city = " ".join([p for p in [str(comp_zip).strip(), str(comp_city).strip()] if p])
-    if line_city:
-        c.drawString(x, yy, line_city); yy -= 6 * mm
-
-    if comp_country:
-        c.drawString(x, yy, comp_country); yy -= 6 * mm
-
-    if comp_phone:
-        c.drawString(x, yy, f"Tél: {comp_phone}"); yy -= 6 * mm
-    if comp_email:
-        c.drawString(x, yy, comp_email); yy -= 6 * mm
-
-    # ✅ SIRET + TVA notice sous TES infos
-    if comp_siret:
-        c.drawString(x, yy, f"Numéro de SIRET {comp_siret}"); yy -= 6 * mm
-    if comp_vat_notice:
-        c.drawString(x, yy, comp_vat_notice); yy -= 6 * mm
-
-    # --- Client block ---
-    c.setFillColor(light)
-    box_y = H - 105 * mm
-    c.rect(left_band_w + margin, box_y - 35 * mm, W - (left_band_w + 2 * margin), 35 * mm, fill=1, stroke=0)
-    c.setFillColor(gray)
-
-    cx = left_band_w + margin + 6 * mm
-    cy = box_y - 10 * mm
-
-    client_name = _get(client, "name", "nom", default="Client")
-    client_addr = _get(client, "address1", "adresse", default="")
-    client_zip = _get(client, "zip_code", "zip", "cp", default="")
-    client_city = _get(client, "city", "ville", default="")
-    client_siret = _get(client, "siret", default="")
-
+    c.setFillColor(ACCENT)
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(cx, cy, client_name)
+    c.drawString(left_x, y0, brand)
 
-    c.setFont("Helvetica", 11)
-    cy -= 7 * mm
-    if client_addr:
-        c.drawString(cx, cy, client_addr); cy -= 6 * mm
-    line_city = " ".join([p for p in [str(client_zip).strip(), str(client_city).strip()] if p])
-    if line_city:
-        c.drawString(cx, cy, line_city); cy -= 6 * mm
-    if client_siret:
-        c.drawString(cx, cy, f"SIRET client: {client_siret}"); cy -= 6 * mm
-
-    # --- Table (1 ligne) ---
-    table_x = left_band_w + margin
-    table_y = H - 155 * mm
-    table_w = W - (left_band_w + 2 * margin)
-    row_h = 10 * mm
-
-    # header
-    c.setFillColor(colors.HexColor("#222222"))
-    c.rect(table_x, table_y, table_w, row_h, fill=1, stroke=0)
-    c.setFillColor(colors.white)
-    c.setFont("Helvetica-Bold", 10)
-
-    c.drawString(table_x + 4 * mm, table_y + 3 * mm, "Désignation")
-    c.drawString(table_x + table_w - 55 * mm, table_y + 3 * mm, "Qté")
-    c.drawString(table_x + table_w - 35 * mm, table_y + 3 * mm, "PU")
-    c.drawString(table_x + table_w - 18 * mm, table_y + 3 * mm, "Total")
-
-    # row
-    c.setFillColor(colors.white)
-    c.rect(table_x, table_y - row_h, table_w, row_h, fill=1, stroke=1)
-    c.setFillColor(gray)
     c.setFont("Helvetica", 10)
+    addr1 = _safe(company, "address1", default="")
+    zip_ = _safe(company, "zip", default="")
+    city = _safe(company, "city", default="")
+    country = _safe(company, "country", default="")
 
-    desc = _get(invoice, "description", default="")
-    qty = float(_get(invoice, "qty", default=1))
-    unit_price = float(_get(invoice, "unit_price", default=0))
-    total_ttc = float(_get(invoice, "total_ttc", default=qty * unit_price))
+    phone = _safe(company, "phone", default="")
+    email = _safe(company, "email", default="")
 
-    c.drawString(table_x + 4 * mm, table_y - row_h + 3 * mm, desc[:80])
-    c.drawRightString(table_x + table_w - 50 * mm, table_y - row_h + 3 * mm, f"{qty:g}")
-    c.drawRightString(table_x + table_w - 30 * mm, table_y - row_h + 3 * mm, _fmt_money(unit_price))
-    c.drawRightString(table_x + table_w - 4 * mm, table_y - row_h + 3 * mm, _fmt_money(total_ttc))
+    line_y = y0 - 6 * mm
+    if legal_name and legal_name != brand:
+        c.drawString(left_x, line_y, legal_name)
+        line_y -= 5 * mm
+    if addr1:
+        c.drawString(left_x, line_y, addr1)
+        line_y -= 5 * mm
+    if zip_ or city:
+        c.drawString(left_x, line_y, f"{zip_} {city}".strip())
+        line_y -= 5 * mm
+    if country:
+        c.drawString(left_x, line_y, country)
+        line_y -= 5 * mm
+    if phone:
+        c.drawString(left_x, line_y, phone)
+        line_y -= 5 * mm
+    if email:
+        c.drawString(left_x, line_y, email)
+        line_y -= 5 * mm
 
-    # --- Totals (TTC only) ---
-    totals_y = table_y - 30 * mm
+    # Identifiants
+    siret = _safe(company, "siret", default="")
+    tva = _safe(company, "tva", default="")
+    if siret:
+        c.setFillColor(MID_GREY)
+        c.drawString(left_x, line_y, f"SIRET : {siret}")
+        line_y -= 5 * mm
+    if tva:
+        c.setFillColor(MID_GREY)
+        c.drawString(left_x, line_y, f"TVA : {tva}")
+        line_y -= 5 * mm
+
+    # Bloc infos facture (droite)
+    issue_date = inv.get("issue_date")
+    if isinstance(issue_date, date):
+        issue_str = issue_date.strftime("%d/%m/%Y")
+    else:
+        issue_str = str(issue_date or "")
+
+    due = inv.get("due", "")
+    op = inv.get("operation_type", "")
+
+    box_w = 80 * mm
+    box_h = 34 * mm
+    box_x = W - margin - box_w
+    box_y = top_y - 55 * mm
+
+    c.setFillColor(LIGHT_BG)
+    c.roundRect(box_x, box_y, box_w, box_h, 6, stroke=0, fill=1)
+
+    c.setFillColor(ACCENT)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(box_x + 8 * mm, box_y + box_h - 10 * mm, "Date de facturation")
+    c.setFont("Helvetica", 10)
+    c.drawRightString(box_x + box_w - 8 * mm, box_y + box_h - 10 * mm, issue_str)
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(box_x + 8 * mm, box_y + box_h - 18 * mm, "Échéance")
+    c.setFont("Helvetica", 10)
+    c.drawRightString(box_x + box_w - 8 * mm, box_y + box_h - 18 * mm, str(due))
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(box_x + 8 * mm, box_y + box_h - 26 * mm, "Type d’opération")
+    c.setFont("Helvetica", 10)
+    c.drawRightString(box_x + box_w - 8 * mm, box_y + box_h - 26 * mm, str(op))
+
+    # --- Bloc client ---
+    client_name = _safe(client, "name", "nom", default="Client")
+    client_addr = _safe(client, "address1", "adresse", default="")
+    client_zip = _safe(client, "zip_code", "zip", default="")
+    client_city = _safe(client, "city", default="")
+    client_siret = _safe(client, "siret", default="")
+
+    block_y = box_y - 18 * mm
+
+    c.setFillColor(ACCENT)
     c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(table_x + table_w, totals_y, f"TOTAL TTC (TVA non applicable) : {_fmt_money(total_ttc)}")
+    c.drawString(left_x, block_y, "Facturé à")
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(left_x, block_y - 7 * mm, client_name)
+
+    c.setFont("Helvetica", 10)
+    yy = block_y - 12 * mm
+    if client_addr:
+        c.drawString(left_x, yy, client_addr)
+        yy -= 5 * mm
+    if client_zip or client_city:
+        c.drawString(left_x, yy, f"{client_zip} {client_city}".strip())
+        yy -= 5 * mm
+    if client_siret:
+        c.setFillColor(MID_GREY)
+        c.drawString(left_x, yy, f"SIRET : {client_siret}")
+        yy -= 5 * mm
+
+    # --- Table lignes ---
+    desc = str(inv.get("description", "")).strip()
+    qty = float(inv.get("qty", 1) or 1)
+    unit = str(inv.get("unit", "u"))
+    unit_price = float(inv.get("unit_price", 0.0) or 0.0)
+    tax_rate = float(inv.get("tax_rate", 0.0) or 0.0)
+
+    total_ht = float(inv.get("total_ht", qty * unit_price) or 0.0)
+    total_tva = float(inv.get("total_tva", 0.0) or 0.0)
+    total_ttc = float(inv.get("total_ttc", total_ht + total_tva) or 0.0)
+
+    table_data = [
+        ["Description", "Qté", "PU", "TVA", "Montant"],
+        [desc, f"{qty:g} {unit}", _fmt_money(unit_price), f"{tax_rate:.2f} %".replace(".", ","), _fmt_money(total_ttc)],
+    ]
+
+    table = Table(table_data, colWidths=[86*mm, 18*mm, 26*mm, 16*mm, 28*mm])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 10),
+        ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("FONTSIZE", (0, 1), (-1, -1), 10),
+        ("BACKGROUND", (0, 1), (-1, 1), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#E5E7EB")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+    ]))
+
+    table_y = block_y - 58 * mm
+    table.wrapOn(c, W - 2 * margin, 120 * mm)
+    table.drawOn(c, left_x, table_y)
+
+    # --- Totaux (droite) ---
+    totals_w = 80 * mm
+    totals_h = 30 * mm
+    totals_x = W - margin - totals_w
+    totals_y = table_y - 36 * mm
+
+    c.setFillColor(LIGHT_BG)
+    c.roundRect(totals_x, totals_y, totals_w, totals_h, 6, stroke=0, fill=1)
+
+    c.setFillColor(ACCENT)
+    c.setFont("Helvetica", 10)
+    c.drawString(totals_x + 8 * mm, totals_y + totals_h - 10 * mm, "Total HT")
+    c.drawRightString(totals_x + totals_w - 8 * mm, totals_y + totals_h - 10 * mm, _fmt_money(total_ht))
+
+    c.setFont("Helvetica", 10)
+    c.drawString(totals_x + 8 * mm, totals_y + totals_h - 18 * mm, "TVA")
+    c.drawRightString(totals_x + totals_w - 8 * mm, totals_y + totals_h - 18 * mm, _fmt_money(total_tva))
+
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(totals_x + 8 * mm, totals_y + totals_h - 27 * mm, "Total TTC")
+    c.drawRightString(totals_x + totals_w - 8 * mm, totals_y + totals_h - 27 * mm, _fmt_money(total_ttc))
+
+    # --- Mention TVA ---
+    vat_notice = _safe(company, "vat_notice", default="")
+    if vat_notice:
+        c.setFillColor(MID_GREY)
+        c.setFont("Helvetica", 9)
+        c.drawString(left_x, totals_y + 4 * mm, vat_notice)
 
     # --- Footer ---
-    c.setFont("Helvetica", 9)
-    footer = comp_vat_notice or "TVA non applicable, art. 293 B du CGI"
-    c.drawString(left_band_w + margin, 15 * mm, footer)
+    c.setStrokeColor(colors.HexColor("#E5E7EB"))
+    c.setLineWidth(1)
+    c.line(band_w + margin, 18 * mm, W - margin, 18 * mm)
+
+    footer = f"{brand} — {addr1} {zip_} {city}".strip()
+    c.setFillColor(MID_GREY)
+    c.setFont("Helvetica", 8.5)
+    c.drawString(left_x, 12 * mm, footer)
+
+    if siret:
+        c.drawRightString(W - margin, 12 * mm, f"SIRET : {siret}")
 
     c.showPage()
     c.save()
