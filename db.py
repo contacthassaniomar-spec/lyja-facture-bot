@@ -296,15 +296,16 @@ def save_invoice(
     return int(iid)
 
 
-# ✅ NOUVEAU : récupérer les factures pour "Mes factures"
-def list_invoices_for_client(client_id: int, limit: int = 80):
+# ✅ NOUVEAU : “Mes factures”
+def list_invoices_for_client(client_id: int, limit: int = 50):
     conn = _conn()
     c = conn.cursor()
     c.execute("""
-        SELECT * FROM invoices
-        WHERE client_id = ?
-        ORDER BY issue_date DESC, id DESC
-        LIMIT ?
+      SELECT id, number, issue_date, total_ttc, pdf_path
+      FROM invoices
+      WHERE client_id = ?
+      ORDER BY issue_date DESC, id DESC
+      LIMIT ?
     """, (int(client_id), int(limit)))
     rows = c.fetchall()
     conn.close()
