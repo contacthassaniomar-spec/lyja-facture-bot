@@ -245,7 +245,10 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await update.message.reply_text(f"✅ Client ajouté: {client.get('name')}\nChoisis une description :", reply_markup=presets_keyboard())
+    await update.message.reply_text(
+        f"✅ Client ajouté: {client.get('name')}\nChoisis une description :",
+        reply_markup=presets_keyboard()
+    )
     return INV_DESC
 
 
@@ -372,7 +375,23 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     logo = get_logo_path()
+
+    # 1) Génération PDF
     draw_invoice_pdf(pdf_path, company, client, invoice_doc, logo)
+
+    # 2) Vérif fichier (si 52 octets => PDF cassé)
+    try:
+        size = pdf_path.stat().st_size
+    except FileNotFoundError:
+        size = 0
+
+    if size < 800:
+        await q.edit_message_text(
+            f"❌ PDF invalide (taille: {size} octets).\n"
+            "➡️ Vérifie : reportlab dans requirements.txt + logo_path + logs Railway."
+        )
+        await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
+        return MENU
 
     # Sauvegarde DB
     db.save_invoice(
@@ -392,8 +411,11 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf_path=str(pdf_path)
     )
 
+    # 3) Envoi TELEGRAM (en binaire)
     await q.edit_message_text("✅ Facture générée. Envoi du PDF…")
-    await q.message.reply_document(document=InputFile(str(pdf_path)), filename=f"{number}.pdf")
+    with open(pdf_path, "rb") as f:
+        await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
+
     await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
 
