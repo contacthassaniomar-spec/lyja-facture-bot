@@ -1,75 +1,69 @@
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-from reportlab.lib.colors import black, HexColor
-from pathlib import Path
+import os
+from datetime import date
 
-def draw_invoice_pdf(pdf_path, company, client, invoice, logo_path=None):
-    pdf_path = Path(pdf_path)
-    c = canvas.Canvas(str(pdf_path), pagesize=A4)
+BASE_PATH = "/app/data"
+LOGO_PATH = "assets/logo.png"
+
+def draw_invoice_pdf(
+    filename,
+    company,
+    company_address,
+    company_siret,
+    client,
+    client_address,
+    invoice_number,
+    description,
+    amount_ttc,
+    tva_rate=0.0
+):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
+
+    c = canvas.Canvas(filename, pagesize=A4)
     width, height = A4
 
-    # Bande latérale
-    c.setFillColor(HexColor("#f2f2f2"))
-    c.rect(0, 0, 35 * mm, height, fill=1, stroke=0)
+    # LOGO
+    if os.path.exists(LOGO_PATH):
+        c.drawImage(LOGO_PATH, 20 * mm, height - 40 * mm, width=40 * mm, preserveAspectRatio=True)
 
-    # Logo
-    if logo_path and Path(logo_path).exists():
-        c.drawImage(str(logo_path), 10 * mm, height - 40 * mm, width=25 * mm, preserveAspectRatio=True)
+    # TITRE
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(120 * mm, height - 30 * mm, f"FACTURE {invoice_number}")
 
-    # Titre
-    c.setFillColor(black)
-    c.setFont("Helvetica-Bold", 18)
-    c.drawString(50 * mm, height - 30 * mm, "FACTURE")
-
-    # Infos facture
+    # SOCIÉTÉ
     c.setFont("Helvetica", 10)
-    y = height - 45 * mm
-    c.drawString(50 * mm, y, f"Numéro : {invoice['number']}")
-    y -= 6 * mm
-    c.drawString(50 * mm, y, f"Date : {invoice['issue_date'].strftime('%d/%m/%Y')}")
-    y -= 6 * mm
-    c.drawString(50 * mm, y, f"Échéance : {invoice['due']}")
-    y -= 6 * mm
-    c.drawString(50 * mm, y, f"Type d’opération : {invoice['operation_type']}")
+    c.drawString(20 * mm, height - 55 * mm, company)
+    c.drawString(20 * mm, height - 62 * mm, company_address)
+    c.drawString(20 * mm, height - 69 * mm, f"SIRET : {company_siret}")
 
-    # Société
-    y -= 15 * mm
+    # CLIENT
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(50 * mm, y, company["name"])
+    c.drawString(120 * mm, height - 55 * mm, client)
     c.setFont("Helvetica", 10)
-    y -= 5 * mm
-    c.drawString(50 * mm, y, company["address"])
-    y -= 5 * mm
-    c.drawString(50 * mm, y, f"{company['zip']} {company['city']}")
-    y -= 5 * mm
-    c.drawString(50 * mm, y, f"SIRET {company['siret']}")
+    c.drawString(120 * mm, height - 62 * mm, client_address)
 
-    # Client
-    y -= 15 * mm
+    # DESCRIPTION
+    y = height - 100 * mm
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(50 * mm, y, client["name"])
+    c.drawString(20 * mm, y, "Description")
     c.setFont("Helvetica", 10)
-    y -= 5 * mm
-    c.drawString(50 * mm, y, client["address1"])
-    y -= 5 * mm
-    c.drawString(50 * mm, y, f"{client['zip']} {client['city']}")
-    if client.get("siret"):
-        y -= 5 * mm
-        c.drawString(50 * mm, y, f"SIRET {client['siret']}")
+    c.drawString(20 * mm, y - 10 * mm, description)
 
-    # Description
-    y -= 15 * mm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(50 * mm, y, "Description")
-    y -= 6 * mm
-    c.setFont("Helvetica", 10)
-    c.drawString(50 * mm, y, invoice["description"])
+    # PRIX
+    tva_amount = amount_ttc * tva_rate
+    total_ht = amount_ttc - tva_amount
 
-    # Totaux
-    y -= 20 * mm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(50 * mm, y, f"Total HT : {invoice['total_ht']:.2f} €")
+    y -= 40 * mm
+    c.drawString(120 * mm, y, f"Total HT : {total_ht:.2f} €")
+    c.drawString(120 * mm, y - 10 * mm, f"TVA : {tva_amount:.2f} €")
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(120 * mm, y - 22 * mm, f"TOTAL TTC : {amount_ttc:.2f} €")
+
+    # MENTION TVA
+    c.setFont("Helvetica", 9)
+    c.drawString(20 * mm, 20 * mm, "TVA non applicable, art. 293B du CGI")
 
     c.showPage()
     c.save()
