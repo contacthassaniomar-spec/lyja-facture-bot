@@ -1,0 +1,23 @@
+{
+  "seller": {
+    "brand_name": "lyja.france",
+    "legal_name": "OMAR HASSANI",
+    "address_lines": ["7 RUE LOUIS LEPRINCE RINGUET BAT C", "13013 MARSEILLE"],
+    "phone": "0635256310",
+    "email": "lyja.france@gmail.com",
+    "siret": "81795380500022",
+    "vat_note": "TVA non applicable, art. 293 B du CGI",
+    "footer_line": "7 RUE LOUIS LEPRINCE RINGUET BAT C 13013 MARSEILLE"
+  },
+  "invoice": {
+    "currency": "EUR",
+    "number_prefix": "FACTURE",
+    "operation_type_default": "Prestation de services",
+    "due_default": "À la réception de la facture",
+    "unit_default": "u",
+    "qty_default": 1
+  },
+  "branding": {
+    "logo_path": "assets/logo.png"
+  }
+}
