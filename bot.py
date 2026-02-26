@@ -28,6 +28,9 @@ from pdf_gen import draw_invoice_pdf
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
+# ✅ IMPORTANT: Telegram refuse les messages "vides" (même " ")
+KB_PING = "⬇️"
+
 
 def load_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -198,6 +201,9 @@ def bottom_nav(context: ContextTypes.DEFAULT_TYPE) -> ReplyKeyboardMarkup:
 
 # ---------------- UI “1 message” helpers (AU-DESSUS) ----------------
 async def ui_show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup):
+    # ✅ Sécurité: jamais un texte vide
+    text = text if (text and text.strip()) else "…"
+
     chat_id = update.effective_chat.id
     ui_id = context.user_data.get("ui_msg_id")
 
@@ -249,99 +255,63 @@ def invoice_to_btn(inv: dict):
     return InlineKeyboardButton(label[:60], callback_data=f"INVFILE::{inv['id']}")
 
 
-# ---------------- Text normalizer (IMPORTANT iPhone) ----------------
-def norm_btn(txt: str) -> str:
-    if not txt:
-        return ""
-    t = txt.strip()
-    t = t.replace("\ufe0f", "").replace("\u200d", "")  # invisible emoji modifiers
-    t = " ".join(t.split())
-
-    keep = []
-    for ch in t:
-        if ch.isalnum() or ch in " '-àâäçéèêëîïôöùûüÿœæÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸŒÆ":
-            keep.append(ch)
-        else:
-            keep.append(" ")
-    t2 = " ".join("".join(keep).split()).lower()
-    return t2
-
-
 # ---------------- Navigation helpers ----------------
 async def go_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="🏠 Menu :"):
     context.user_data["nav"] = "HOME"
-    await update.effective_message.reply_text(" ", reply_markup=bottom_nav(context))
+    await update.effective_message.reply_text(KB_PING, reply_markup=bottom_nav(context))
     await ui_show(update, context, text, main_menu_inline())
     return MENU
 
 
 # ---------------- Router (boutons SOUS clavier uniquement) ----------------
 async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    raw = (update.message.text or "")
-    t = norm_btn(raw)
+    txt = (update.message.text or "").strip()
     nav = (context.user_data.get("nav") or "HOME").upper()
 
-    # Liste des libellés qu'on accepte comme "boutons"
-    known = {
-        "menu",
-        "clients",
-        "creer une facture",
-        "créer une facture",
-        "mes factures",
-        "liste clients",
-        "ajouter client",
-        "import clients",
-        "rechercher client",
-        "retour",
-    }
-
-    # si ce n'est pas un bouton => on laisse les autres handlers gérer
-    if t not in known:
-        return None
-
     # MAIN
-    if t == "menu":
+    if txt == "🏠 Menu":
         return await go_menu(update, context, "🏠 Menu :")
 
-    if t == "clients":
+    if txt == "👥 Clients":
         context.user_data["nav"] = "CLIENTS"
-        await update.message.reply_text(" ", reply_markup=bottom_nav(context))
+        await update.message.reply_text(KB_PING, reply_markup=bottom_nav(context))
         await ui_show(update, context, "👥 Clients — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENTS_MENU
 
-    if t in ("creer une facture", "créer une facture"):
+    if txt == "🧾 Créer une facture":
         context.user_data.pop("client_id", None)
         context.user_data.pop("client", None)
         context.user_data.pop("new_client", None)
         context.user_data["nav"] = "NEW_INV"
-        await update.message.reply_text(" ", reply_markup=bottom_nav(context))
+        await update.message.reply_text(KB_PING, reply_markup=bottom_nav(context))
         await ui_show(update, context, "🧾 Nouvelle facture — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_CHOOSE_FOR_INV
 
-    if t == "mes factures":
+    if txt == "🗂️ Mes factures":
         context.user_data["nav"] = "INVOICES"
-        await update.message.reply_text(" ", reply_markup=bottom_nav(context))
+        await update.message.reply_text(KB_PING, reply_markup=bottom_nav(context))
         await ui_show(update, context, "🗂️ Mes factures — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return INVOICES_CLIENT_PICK
 
-    if t == "retour":
+    # RETOUR
+    if txt == "⬅️ Retour":
         return await go_menu(update, context, "🏠 Menu :")
 
     # ----- SUB: NEW_INV -----
-    if nav == "NEW_INV" and t == "rechercher client":
+    if nav == "NEW_INV" and txt == "🔎 Rechercher client":
         context.user_data["pending_search_mode"] = "NEW_INV"
         await ui_show(update, context, "🔎 Recherche client\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_SEARCH_FOR_INV
 
-    if nav == "NEW_INV" and t == "liste clients":
+    if nav == "NEW_INV" and txt == "📋 Liste clients":
         clients = db.list_clients(200)
         if not clients:
             await ui_show(update, context, "Aucun client enregistré.", InlineKeyboardMarkup([
@@ -354,14 +324,14 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ui_show(update, context, "📋 Choisis un client :", InlineKeyboardMarkup(kb))
         return CLIENT_CHOOSE_FOR_INV
 
-    if nav == "NEW_INV" and t == "ajouter client":
+    if nav == "NEW_INV" and txt == "➕ Ajouter client":
         await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
 
     # ----- SUB: CLIENTS -----
-    if nav == "CLIENTS" and t == "liste clients":
+    if nav == "CLIENTS" and txt == "📋 Liste clients":
         clients = db.list_clients(200)
         if not clients:
             await ui_show(update, context, "Aucun client enregistré.", InlineKeyboardMarkup([
@@ -374,13 +344,13 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ui_show(update, context, "📋 Liste clients :", InlineKeyboardMarkup(kb))
         return CLIENTS_MENU
 
-    if nav == "CLIENTS" and t == "ajouter client":
+    if nav == "CLIENTS" and txt == "➕ Ajouter client":
         await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
 
-    if nav == "CLIENTS" and t == "import clients":
+    if nav == "CLIENTS" and txt == "📥 Import clients":
         await ui_show(update, context,
                       "📥 Import clients\n\n"
                       "Colle tes clients (1 par ligne) au format :\n"
@@ -391,14 +361,14 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return IMPORT_CLIENTS
 
     # ----- SUB: INVOICES -----
-    if nav == "INVOICES" and t == "rechercher client":
+    if nav == "INVOICES" and txt == "🔎 Rechercher client":
         context.user_data["pending_search_mode"] = "INVOICES"
         await ui_show(update, context, "🔎 Recherche client (Mes factures)\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return INVOICES_CLIENT_PICK
 
-    if nav == "INVOICES" and t == "liste clients":
+    if nav == "INVOICES" and txt == "📋 Liste clients":
         clients = db.list_clients(200)
         if not clients:
             await ui_show(update, context, "Aucun client enregistré.", InlineKeyboardMarkup([
@@ -411,7 +381,7 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ui_show(update, context, "🗂️ Choisis un client :", InlineKeyboardMarkup(kb))
         return INVOICES_CLIENT_PICK
 
-    return None
+    return MENU
 
 
 # ---------------- Handlers ----------------
@@ -443,7 +413,7 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "MENU::CLIENTS":
         context.user_data["nav"] = "CLIENTS"
-        await q.message.reply_text(" ", reply_markup=bottom_nav(context))
+        await q.message.reply_text(KB_PING, reply_markup=bottom_nav(context))
         await ui_show(update, context, "👥 Clients — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
@@ -451,7 +421,7 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "MENU::NEW_INV":
         context.user_data["nav"] = "NEW_INV"
-        await q.message.reply_text(" ", reply_markup=bottom_nav(context))
+        await q.message.reply_text(KB_PING, reply_markup=bottom_nav(context))
         await ui_show(update, context, "🧾 Nouvelle facture — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
@@ -459,7 +429,7 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "MENU::INVOICES":
         context.user_data["nav"] = "INVOICES"
-        await q.message.reply_text(" ", reply_markup=bottom_nav(context))
+        await q.message.reply_text(KB_PING, reply_markup=bottom_nav(context))
         await ui_show(update, context, "🗂️ Mes factures — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
@@ -888,8 +858,12 @@ def main():
     db.init_db()
     app = Application.builder().token(token).build()
 
-    # ✅ IMPORTANT : on capte tous les textes, et nav_router filtre lui-même
-    nav_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, nav_router)
+    # ✅ On intercepte UNIQUEMENT les boutons du clavier bas (et pas les saisies client)
+    NAV_REGEX = (
+        r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures|"
+        r"📋 Liste clients|➕ Ajouter client|📥 Import clients|🔎 Rechercher client|⬅️ Retour)$"
+    )
+    nav_handler = MessageHandler(filters.Regex(NAV_REGEX), nav_router)
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
