@@ -4,19 +4,22 @@ import sqlite3
 from pathlib import Path
 from datetime import date, datetime
 
+
 def data_dir() -> Path:
-    # Railway Volume conseillé: /data
-    base = os.getenv("DATA_DIR", "/data")
+    base = os.getenv("DATA_DIR", "/data")  # Railway Volume conseillé
     p = Path(base)
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+
 DB_PATH = data_dir() / "app.db"
+
 
 def _conn():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db():
     conn = _conn()
@@ -75,12 +78,18 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def set_setting(key: str, value: str):
     conn = _conn()
     c = conn.cursor()
-    c.execute("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+    c.execute(
+        "INSERT INTO settings(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value)
+    )
     conn.commit()
     conn.close()
+
 
 def get_setting(key: str, default: str = "") -> str:
     conn = _conn()
@@ -92,11 +101,13 @@ def get_setting(key: str, default: str = "") -> str:
         return default
     return row["value"]
 
+
 def slugify(s: str) -> str:
-    s = s.strip().lower()
+    s = (s or "").strip().lower()
     s = re.sub(r"[^a-z0-9]+", "-", s)
     s = re.sub(r"-+", "-", s).strip("-")
     return s or "client"
+
 
 def add_client(
     name: str,
@@ -116,7 +127,7 @@ def add_client(
       INSERT INTO clients(name,email,phone,address1,address2,zip,city,country,siret,tva,created_at)
       VALUES(?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        name.strip(),
+        (name or "").strip(),
         (email or "").strip(),
         (phone or "").strip(),
         (address1 or "").strip(),
@@ -133,11 +144,12 @@ def add_client(
     conn.close()
     return int(cid)
 
+
 def update_client(client_id: int, fields: dict):
-    allowed = {"name","email","phone","address1","address2","zip","city","country","siret","tva"}
+    allowed = {"name", "email", "phone", "address1", "address2", "zip", "city", "country", "siret", "tva"}
     parts = []
     vals = []
-    for k,v in fields.items():
+    for k, v in (fields or {}).items():
         if k in allowed:
             parts.append(f"{k}=?")
             vals.append((v or "").strip())
@@ -150,6 +162,7 @@ def update_client(client_id: int, fields: dict):
     conn.commit()
     conn.close()
 
+
 def get_client(client_id: int):
     conn = _conn()
     c = conn.cursor()
@@ -157,6 +170,7 @@ def get_client(client_id: int):
     row = c.fetchone()
     conn.close()
     return dict(row) if row else None
+
 
 def search_clients(q: str, limit: int = 20):
     q = (q or "").strip()
@@ -173,6 +187,7 @@ def search_clients(q: str, limit: int = 20):
     conn.close()
     return [dict(r) for r in rows]
 
+
 def list_clients(limit: int = 200):
     conn = _conn()
     c = conn.cursor()
@@ -181,51 +196,58 @@ def list_clients(limit: int = 200):
     conn.close()
     return [dict(r) for r in rows]
 
+
 def next_invoice_number(prefix: str, issue: date, use_year: bool = True) -> str:
+    prefix = (prefix or "FACTURE").strip()
+
     if use_year:
         year = issue.year
         key = f"next_seq_{year}"
         forced = get_setting(key, "")
+
         if forced.isdigit():
             seq = int(forced)
         else:
             conn = _conn()
             c = conn.cursor()
             c.execute(
-                "SELECT number FROM invoices WHERE number LIKE ? ORDER BY id DESC LIMIT 50",
+                "SELECT number FROM invoices WHERE number LIKE ? ORDER BY id DESC LIMIT 200",
                 (f"{prefix}-{year}-%",)
             )
             rows = c.fetchall()
             conn.close()
 
             mx = 0
-            for (num,) in rows:
+            for r in rows:
+                num = r["number"]
                 try:
                     mx = max(mx, int(str(num).split("-")[-1]))
-                except:
+                except Exception:
                     pass
             seq = mx + 1
 
         set_setting(key, str(seq + 1))
         return f"{prefix}-{year}-{seq:03d}"
 
-    # fallback sans année
     key = "next_seq"
     forced = get_setting(key, "")
     seq = int(forced) if forced.isdigit() else 1
     set_setting(key, str(seq + 1))
     return f"{prefix}-{seq:03d}"
 
+
 def invoices_root() -> Path:
     p = data_dir() / "invoices"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+
 def client_folder(client: dict) -> Path:
-    slug = slugify(client["name"])
+    slug = slugify(client.get("name", "client"))
     p = invoices_root() / f"{slug}_{client['id']}"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
 
 def save_invoice(
     client_id: int,
@@ -252,20 +274,20 @@ def save_invoice(
       )
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     """, (
-        client_id,
-        number,
+        int(client_id),
+        (number or "").strip(),
         issue_date.isoformat(),
-        due,
-        operation_type,
-        description,
+        (due or "").strip(),
+        (operation_type or "").strip(),
+        (description or "").strip(),
         float(qty),
-        unit,
+        (unit or "").strip(),
         float(unit_price),
         float(tax_rate),
         float(total_ht),
         float(total_tva),
         float(total_ttc),
-        pdf_path,
+        (pdf_path or "").strip(),
         datetime.utcnow().isoformat()
     ))
     conn.commit()
