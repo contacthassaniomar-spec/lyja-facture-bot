@@ -1,35 +1,38 @@
 {
-  "bot": {
-    "name": "FACTURE LYJA FRANCE",
-    "admin_telegram_user_ids": []
-  },
-  "seller": {
-    "company": "LYJA FRANCE",
-    "address_lines": ["Adresse ligne 1", "Code Postal Ville", "France"],
-    "email": "contact@lyja.fr",
-    "phone": "+33 6 00 00 00 00",
+  "company": {
+    "brand": "LYJA FRANCE",
+    "legal_name": "LYJA.FRANCE",
+    "address1": "7 RUE LOUIS LEPRINCE RINGUET BAT C",
+    "zip": "13013",
+    "city": "MARSEILLE",
+    "country": "France",
+    "phone": "0635256310",
+    "email": "lyja.france@gmail.com",
     "siret": "81795380500022",
+    "tva": "",
     "vat_notice": "TVA non applicable, art. 293 B du CGI"
   },
   "invoice": {
-    "currency": "EUR",
-    "operation_type_default": "Prestation de services",
+    "number_prefix": "FACTURE",
+    "use_year": true,
     "due_default": "À la réception de la facture",
+    "operation_type_default": "Prestation de services",
     "qty_default": 1,
     "unit_default": "u",
-    "number_prefix": "FACTURE",
-    "number_digits": 3
-  },
-  "descriptions": {
-    "presets": [
+    "currency": "EUR",
+    "description_presets": [
       "Prestation de services",
-      "Vente de marchandises",
-      "Acompte",
-      "Règlement solde"
+      "Livraison de biens",
+      "Dépannage",
+      "Accompagnement",
+      "Installation / Pose",
+      "Tirage câble électrique et Fibre"
     ]
   },
   "pdf": {
-    "logo_path": "assets/logo.png",
-    "primary_color": "#000000"
+    "logo_path": "assets/logo.png"
+  },
+  "bot": {
+    "admin_only": false
   }
 }
