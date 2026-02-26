@@ -41,6 +41,93 @@ def money_to_float(text: str) -> float:
     return float(Decimal(t))
 
 
+def safe_get(d: dict, *keys, default=""):
+    """Récupère une valeur avec plusieurs noms possibles (anti KeyError)."""
+    if not isinstance(d, dict):
+        return default
+    for k in keys:
+        if k in d and d[k] not in (None, ""):
+            return d[k]
+    return default
+
+
+def normalize_company_for_pdf(company: dict) -> dict:
+    """
+    pdf_gen.py peut attendre des clés différentes selon versions.
+    Ici on fournit plusieurs variantes (nom, adresse, zip_code, code postal…)
+    """
+    brand = safe_get(company, "brand", "enseigne", default="")
+    legal = safe_get(company, "legal_name", "raison_sociale", "nom", default=brand)
+
+    address1 = safe_get(company, "address1", "adresse", "address", default="")
+    zip_ = safe_get(company, "zip", "zip_code", "code_postal", "code postal", default="")
+    city = safe_get(company, "city", "ville", default="")
+    country = safe_get(company, "country", "pays", default="France")
+
+    phone = safe_get(company, "phone", "tel", "telephone", default="")
+    email = safe_get(company, "email", default="")
+    siret = safe_get(company, "siret", default="")
+    tva = safe_get(company, "tva", "vat", "vat_number", default="")
+    vat_notice = safe_get(company, "vat_notice", "mention_tva", "tva_notice", default="TVA non applicable, art. 293 B du CGI")
+
+    return {
+        # variantes "propres"
+        "brand": brand,
+        "legal_name": legal,
+        "address1": address1,
+        "zip": zip_,
+        "city": city,
+        "country": country,
+        "phone": phone,
+        "email": email,
+        "siret": siret,
+        "tva": tva,
+        "vat_notice": vat_notice,
+
+        # variantes parfois attendues
+        "nom": legal,
+        "enseigne": brand,
+        "adresse": address1,
+        "zip_code": zip_,
+        "code_postal": zip_,
+        "code postal": zip_,
+        "ville": city,
+        "pays": country,
+        "telephone": phone,
+    }
+
+
+def normalize_client_for_pdf(client: dict) -> dict:
+    name = safe_get(client, "name", "nom", default="Client")
+    address1 = safe_get(client, "address1", "adresse", "address", default="")
+    zip_ = safe_get(client, "zip", "zip_code", "code_postal", "code postal", default="")
+    city = safe_get(client, "city", "ville", default="")
+    country = safe_get(client, "country", "pays", default="France")
+    siret = safe_get(client, "siret", default="")
+    tva = safe_get(client, "tva", "vat", default="")
+
+    return {
+        # DB
+        "id": client.get("id"),
+        "name": name,
+        "address1": address1,
+        "zip": zip_,
+        "city": city,
+        "country": country,
+        "siret": siret,
+        "tva": tva,
+
+        # variantes parfois attendues
+        "nom": name,
+        "adresse": address1,
+        "zip_code": zip_,
+        "code_postal": zip_,
+        "code postal": zip_,
+        "ville": city,
+        "pays": country,
+    }
+
+
 # ---------------- States ----------------
 (
     MENU,
@@ -55,7 +142,7 @@ def money_to_float(text: str) -> float:
     INV_PRICE,
     INV_CONFIRM,
     INV_FORCE_NUMBER,
-    IMPORT_CLIENTS
+    IMPORT_CLIENTS,
 ) = range(13)
 
 
@@ -64,6 +151,7 @@ def presets_keyboard():
     presets = CFG.get("invoice", {}).get("description_presets", [])
     rows = [[InlineKeyboardButton(p, callback_data=f"PRESET::{p}")] for p in presets]
     rows.append([InlineKeyboardButton("✍️ Saisie manuelle", callback_data="PRESET::MANUAL")])
+    rows.append([InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -72,7 +160,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🧾 Créer une facture", callback_data="MENU::NEW_INV")],
         [InlineKeyboardButton("👥 Clients (liste)", callback_data="MENU::LIST_CLIENTS")],
         [InlineKeyboardButton("➕ Ajouter un client", callback_data="MENU::ADD_CLIENT")],
-        [InlineKeyboardButton("📥 Import clients", callback_data="MENU::IMPORT_CLIENTS")]
+        [InlineKeyboardButton("📥 Import clients", callback_data="MENU::IMPORT_CLIENTS")],
     ])
 
 
@@ -90,7 +178,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     db.init_db()
-    await update.message.reply_text("Bienvenue 👋\nChoisis une action :", reply_markup=main_menu_keyboard())
+    await update.message.reply_text("✅ Bot facture en ligne.\nChoisis une action :", reply_markup=main_menu_keyboard())
+    return MENU
+
+
+async def back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
 
 
@@ -106,7 +201,7 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔎 Rechercher", callback_data="CLIENTMODE::SEARCH")],
                 [InlineKeyboardButton("➕ Ajouter un client", callback_data="CLIENTMODE::ADD")],
-                [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
+                [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")],
             ])
         )
         return CLIENT_CHOOSE
@@ -138,13 +233,6 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return IMPORT_CLIENTS
 
-    await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
-
-
-async def back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
     await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
 
@@ -240,7 +328,7 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tva=tva
     )
     client = db.get_client(cid)
-    db.client_folder(client)  # crée le dossier client
+    db.client_folder(client)
 
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
@@ -302,7 +390,7 @@ async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["unit_price"] = price
     context.user_data["qty"] = float(CFG.get("invoice", {}).get("qty_default", 1))
-    context.user_data["unit"] = CFG.get("invoice", {}).get("unit_default", "forfait")
+    context.user_data["unit"] = CFG.get("invoice", {}).get("unit_default", "u")
     context.user_data["tax_rate"] = 0.0  # TVA non applicable
 
     prefix = CFG.get("invoice", {}).get("number_prefix", "FACTURE")
@@ -313,7 +401,7 @@ async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
         [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
-        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
+        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")],
     ])
 
     await update.message.reply_text(recap_message(context), reply_markup=kb)
@@ -340,7 +428,7 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     number = context.user_data["number"]
     issue = date.today()
-    due = CFG.get("invoice", {}).get("due_default", "À réception")
+    due = CFG.get("invoice", {}).get("due_default", "À la réception de la facture")
     op = CFG.get("invoice", {}).get("operation_type_default", "Prestation de services")
     desc = context.user_data["description"]
     qty = context.user_data["qty"]
@@ -348,14 +436,12 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     unit_price = context.user_data["unit_price"]
     tax_rate = context.user_data["tax_rate"]
 
-    # TTC = montant saisi (TVA non applicable)
     total_ttc = float(qty) * float(unit_price)
     total_ht = total_ttc
     total_tva = 0.0
 
-    # Dossiers : data/clients/<CLIENT>/YYYY/<FACTURE>.pdf
     folder = db.client_folder(client) / str(issue.year)
-    folder.mkdir(parents=True, exist_ok=True)  # ✅ IMPORTANT
+    folder.mkdir(parents=True, exist_ok=True)
     pdf_path = folder / f"{number}.pdf"
 
     invoice_doc = {
@@ -371,15 +457,19 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "tax_rate": tax_rate,
         "total_ht": total_ht,
         "total_tva": total_tva,
-        "total_ttc": total_ttc
+        "total_ttc": total_ttc,
+        "vat_notice": safe_get(company, "vat_notice", default="TVA non applicable, art. 293 B du CGI")
     }
 
     logo = get_logo_path()
 
-    # 1) Génération PDF
-    draw_invoice_pdf(pdf_path, company, client, invoice_doc, logo)
+    # ✅ NORMALISATION (anti KeyError: "code postal", "zip_code", etc.)
+    company_pdf = normalize_company_for_pdf(company)
+    client_pdf = normalize_client_for_pdf(client)
 
-    # 2) Vérif fichier (si 52 octets => PDF cassé)
+    draw_invoice_pdf(pdf_path, company_pdf, client_pdf, invoice_doc, logo)
+
+    # Vérif taille (évite le "application.octet-stream 52 octets")
     try:
         size = pdf_path.stat().st_size
     except FileNotFoundError:
@@ -393,7 +483,6 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
         return MENU
 
-    # Sauvegarde DB
     db.save_invoice(
         client_id=client["id"],
         number=number,
@@ -411,7 +500,6 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pdf_path=str(pdf_path)
     )
 
-    # 3) Envoi TELEGRAM (en binaire)
     await q.edit_message_text("✅ Facture générée. Envoi du PDF…")
     with open(pdf_path, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
@@ -440,7 +528,7 @@ async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
         [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
-        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")]
+        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")],
     ])
     await update.message.reply_text(recap_message(context), reply_markup=kb)
     return INV_CONFIRM
@@ -479,7 +567,7 @@ async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tva=tva
         )
         client = db.get_client(cid)
-        db.client_folder(client)  # crée le dossier client
+        db.client_folder(client)
         ok += 1
 
     await update.message.reply_text(
@@ -523,6 +611,7 @@ def main():
             INV_DESC: [
                 CallbackQueryHandler(desc_pick, pattern=r"^PRESET::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
+                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, price_step)],
             INV_CONFIRM: [
@@ -538,6 +627,8 @@ def main():
 
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
+
+    # ⚠️ Si tu vois "telegram.error.Conflict", ça veut dire 2 instances du bot en même temps.
     app.run_polling()
 
 
