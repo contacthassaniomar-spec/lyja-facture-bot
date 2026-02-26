@@ -28,9 +28,6 @@ from pdf_gen import draw_invoice_pdf
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
-# Telegram refuse les messages vides
-PING = "⬇️"
-
 
 def load_config():
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
@@ -169,23 +166,21 @@ def bottom_main() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
 
-# ---------------- UI message (1 seul message édité) ----------------
+# ---------------- UI message (suit la conversation) ----------------
 async def ui_show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, keyboard: InlineKeyboardMarkup | None):
+    """
+    ✅ NOUVELLE LOGIQUE:
+    - Supprime l'ancien message UI (du bot) si possible
+    - Envoie un nouveau message (donc le sous-menu reste en bas du chat)
+    """
     text = text if (text and text.strip()) else "…"
-    chat_id = update.effective_chat.id
-    ui_id = context.user_data.get("ui_msg_id")
 
-    if ui_id:
+    old_id = context.user_data.get("ui_msg_id")
+    if old_id:
         try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=ui_id,
-                text=text,
-                reply_markup=keyboard,
-            )
-            return
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=old_id)
         except Exception:
-            context.user_data.pop("ui_msg_id", None)
+            pass
 
     msg = await update.effective_message.reply_text(text, reply_markup=keyboard)
     context.user_data["ui_msg_id"] = msg.message_id
@@ -205,7 +200,7 @@ def clients_inline():
         [InlineKeyboardButton("📋 Liste clients", callback_data="CLIENTS::LIST")],
         [InlineKeyboardButton("➕ Ajouter client", callback_data="CLIENTS::ADD")],
         [InlineKeyboardButton("📥 Import clients", callback_data="CLIENTS::IMPORT")],
-        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
 
 
@@ -214,7 +209,7 @@ def new_inv_inline():
         [InlineKeyboardButton("🔎 Rechercher client", callback_data="INV::SEARCH_CLIENT")],
         [InlineKeyboardButton("📋 Liste clients", callback_data="INV::LIST_CLIENTS")],
         [InlineKeyboardButton("➕ Ajouter client", callback_data="INV::ADD_CLIENT")],
-        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
 
 
@@ -222,7 +217,7 @@ def invoices_inline():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔎 Rechercher client", callback_data="INVOICES::SEARCH_CLIENT")],
         [InlineKeyboardButton("📋 Liste clients", callback_data="INVOICES::LIST_CLIENTS")],
-        [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")],
+        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
 
 
@@ -230,7 +225,7 @@ def presets_keyboard():
     presets = CFG.get("invoice", {}).get("description_presets", [])
     rows = [[InlineKeyboardButton(p, callback_data=f"PRESET::{p}")] for p in presets]
     rows.append([InlineKeyboardButton("✍️ Saisie manuelle", callback_data="PRESET::MANUAL")])
-    rows.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
+    rows.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -252,8 +247,12 @@ def invoice_to_btn(inv: dict):
 # ---------------- Navigation helpers ----------------
 async def go_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["screen"] = "MENU"
-    await update.effective_message.reply_text(PING, reply_markup=bottom_main())
-    await ui_show(update, context, "🏠 Menu :", main_menu_inline())
+    await ui_show(
+        update,
+        context,
+        "🏠 **Menu**\nChoisis une section :",
+        main_menu_inline(),
+    )
     return MENU
 
 
@@ -265,7 +264,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.init_db()
     context.user_data.clear()
-    await update.message.reply_text("✅ Bot Facture en ligne.\nUtilise le menu en bas 👇", reply_markup=bottom_main())
+
+    # On met le clavier principal UNE fois (plus de flèche, plus de message vide)
+    await update.message.reply_text(
+        "✅ Bot Facture en ligne.\nUtilise les **4 boutons** en bas 👇",
+        reply_markup=bottom_main(),
+    )
     return await go_menu(update, context)
 
 
@@ -278,7 +282,7 @@ async def bottom_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if txt == "👥 Clients":
         context.user_data["screen"] = "CLIENTS"
-        await ui_show(update, context, "👥 Clients :", clients_inline())
+        await ui_show(update, context, "👥 **Clients**\nQue veux-tu faire ?", clients_inline())
         return CLIENTS_MENU
 
     if txt == "🧾 Créer une facture":
@@ -286,18 +290,18 @@ async def bottom_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("client_id", None)
         context.user_data.pop("client", None)
         context.user_data.pop("new_client", None)
-        await ui_show(update, context, "🧾 Nouvelle facture — choisis une option :", new_inv_inline())
+        await ui_show(update, context, "🧾 **Nouvelle facture**\nChoisis une option :", new_inv_inline())
         return MENU
 
     if txt == "🗂️ Mes factures":
         context.user_data["screen"] = "INVOICES"
-        await ui_show(update, context, "🗂️ Mes factures — choisis une option :", invoices_inline())
+        await ui_show(update, context, "🗂️ **Mes factures**\nChoisis une option :", invoices_inline())
         return INVOICES_CLIENT_PICK
 
     return MENU
 
 
-# ---------------- Top inline handlers ----------------
+# ---------------- Inline nav ----------------
 async def back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
     return await go_menu(update, context)
@@ -309,17 +313,17 @@ async def top_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "TOP::CLIENTS":
         context.user_data["screen"] = "CLIENTS"
-        await ui_show(update, context, "👥 Clients :", clients_inline())
+        await ui_show(update, context, "👥 **Clients**\nQue veux-tu faire ?", clients_inline())
         return CLIENTS_MENU
 
     if q.data == "TOP::NEW_INV":
         context.user_data["screen"] = "NEW_INV"
-        await ui_show(update, context, "🧾 Nouvelle facture — choisis une option :", new_inv_inline())
+        await ui_show(update, context, "🧾 **Nouvelle facture**\nChoisis une option :", new_inv_inline())
         return MENU
 
     if q.data == "TOP::INVOICES":
         context.user_data["screen"] = "INVOICES"
-        await ui_show(update, context, "🗂️ Mes factures — choisis une option :", invoices_inline())
+        await ui_show(update, context, "🗂️ **Mes factures**\nChoisis une option :", invoices_inline())
         return INVOICES_CLIENT_PICK
 
     return MENU
@@ -339,21 +343,21 @@ async def clients_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[client_to_btn(c, prefix="CLVIEW::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::CLIENTS")])
         kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
-        await ui_show(update, context, "📋 Liste clients :", InlineKeyboardMarkup(kb))
+        await ui_show(update, context, "📋 **Liste clients**\nSélectionne :", InlineKeyboardMarkup(kb))
         return CLIENTS_MENU
 
     if q.data == "CLIENTS::ADD":
-        await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
+        await ui_show(update, context, "➕ **Nouveau client**\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
 
     if q.data == "CLIENTS::IMPORT":
         await ui_show(update, context,
-                      "📥 Import clients\n\n"
+                      "📥 **Import clients**\n\n"
                       "Colle tes clients (1 par ligne) au format :\n"
-                      "NOM | ADRESSE | CP | VILLE | SIRET | TVA\n\n"
-                      "Si TVA n’existe pas, mets '-'.\n\n"
+                      "`NOM | ADRESSE | CP | VILLE | SIRET | TVA`\n\n"
+                      "Si TVA n’existe pas, mets `-`.\n\n"
                       "➡️ Colle maintenant ton bloc (réponds dans le chat).",
                       InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]]))
         return IMPORT_CLIENTS
@@ -368,7 +372,7 @@ async def inv_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == "INV::SEARCH_CLIENT":
         context.user_data["pending_search_mode"] = "NEW_INV"
-        await ui_show(update, context, "🔎 Recherche client\nTape le nom / email / tel :", InlineKeyboardMarkup([
+        await ui_show(update, context, "🔎 **Recherche client**\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_SEARCH_FOR_INV
@@ -382,11 +386,11 @@ async def inv_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::NEW_INV")])
         kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
-        await ui_show(update, context, "📋 Choisis un client :", InlineKeyboardMarkup(kb))
+        await ui_show(update, context, "📋 **Choisis un client** :", InlineKeyboardMarkup(kb))
         return MENU
 
     if q.data == "INV::ADD_CLIENT":
-        await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
+        await ui_show(update, context, "➕ **Nouveau client**\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
@@ -404,7 +408,7 @@ async def client_search_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in results]
     kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::NEW_INV")])
     kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
-    await ui_show(update, context, "Résultats :", InlineKeyboardMarkup(kb))
+    await ui_show(update, context, "✅ **Résultats**\nSélectionne un client :", InlineKeyboardMarkup(kb))
     return MENU
 
 
@@ -417,7 +421,7 @@ async def client_select_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await ui_show(update, context, "🧾 Facture — choisis une description :", presets_keyboard())
+    await ui_show(update, context, "🧾 **Facture**\nChoisis une description :", presets_keyboard())
     return INV_DESC
 
 
@@ -428,7 +432,7 @@ async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Nom vide. Réessaie.", reply_markup=bottom_main())
         return CLIENT_ADD_NAME
     context.user_data["new_client"] = {"name": name}
-    await ui_show(update, context, "Adresse ligne 1 ? (réponds dans le chat)", InlineKeyboardMarkup([
+    await ui_show(update, context, "📍 Adresse ligne 1 ? (réponds dans le chat)", InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
     ]))
     return CLIENT_ADD_ADDR
@@ -436,7 +440,7 @@ async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_client_addr(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_client"]["address1"] = (update.message.text or "").strip()
-    await ui_show(update, context, "Code postal + Ville ? (ex: 13015 Marseille)", InlineKeyboardMarkup([
+    await ui_show(update, context, "📮 Code postal + Ville ? (ex: 13015 Marseille)", InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
     ]))
     return CLIENT_ADD_CITYZIP
@@ -447,7 +451,7 @@ async def add_client_cityzip(update: Update, context: ContextTypes.DEFAULT_TYPE)
     parts = txt.split()
     context.user_data["new_client"]["zip"] = parts[0] if parts else ""
     context.user_data["new_client"]["city"] = " ".join(parts[1:]) if len(parts) > 1 else ""
-    await ui_show(update, context, "SIRET du client ? (ou '-' si rien)", InlineKeyboardMarkup([
+    await ui_show(update, context, "🏷️ SIRET du client ? (ou '-' si rien)", InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
     ]))
     return CLIENT_ADD_SIRET
@@ -458,7 +462,7 @@ async def add_client_siret(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if siret == "-":
         siret = ""
     context.user_data["new_client"]["siret"] = siret
-    await ui_show(update, context, "TVA du client ? (ou '-' si rien)", InlineKeyboardMarkup([
+    await ui_show(update, context, "🧾 TVA du client ? (ou '-' si rien)", InlineKeyboardMarkup([
         [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
     ]))
     return CLIENT_ADD_TVA
@@ -485,7 +489,7 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await ui_show(update, context, f"✅ Client ajouté: {client.get('name')}\n\n🧾 Maintenant choisis une description :", presets_keyboard())
+    await ui_show(update, context, f"✅ Client ajouté: **{client.get('name')}**\n\n🧾 Choisis une description :", presets_keyboard())
     return INV_DESC
 
 
@@ -496,7 +500,7 @@ async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, val = q.data.split("::", 1)
 
     if val == "MANUAL":
-        await ui_show(update, context, "Tape la description (réponds dans le chat) :", InlineKeyboardMarkup([
+        await ui_show(update, context, "✍️ Tape la description (réponds dans le chat) :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return INV_DESC
@@ -526,7 +530,7 @@ def recap_message(context) -> str:
     number = context.user_data["number"]
     desc = context.user_data["description"]
     msg = (
-        f"📌 Récapitulatif\n"
+        f"📌 **Récapitulatif**\n"
         f"• Client : {client.get('name')}\n"
         f"• Description : {desc}\n"
         f"• Montant TTC : {price:.2f} € (TVA non applicable)\n"
@@ -723,7 +727,6 @@ async def invoices_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     if q.data == "INVOICES::SEARCH_CLIENT":
-        context.user_data["pending_search_mode"] = "INVOICES"
         await ui_show(update, context, "🔎 Recherche client (Mes factures)\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
@@ -736,7 +739,6 @@ async def invoices_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return INVOICES_CLIENT_PICK
 
         kb = [[client_to_btn(c, prefix="INVCL::")] for c in clients[:40]]
-        kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="TOP::INVOICES")])
         kb.append([InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")])
         await ui_show(update, context, "🗂️ Choisis un client :", InlineKeyboardMarkup(kb))
         return INVOICES_CLIENT_PICK
@@ -809,11 +811,13 @@ def main():
     db.init_db()
     app = Application.builder().token(token).build()
 
+    main_buttons_regex = r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"
+
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             MENU: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 CallbackQueryHandler(top_menu_click, pattern=r"^TOP::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
                 CallbackQueryHandler(inv_actions, pattern=r"^INV::"),
@@ -823,73 +827,73 @@ def main():
             ],
 
             CLIENTS_MENU: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 CallbackQueryHandler(clients_actions, pattern=r"^CLIENTS::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             CLIENT_SEARCH_FOR_INV: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, client_search_for_inv),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             CLIENT_ADD_NAME: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_ADDR: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_CITYZIP: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_SIRET: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             CLIENT_ADD_TVA: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             IMPORT_CLIENTS: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             INV_DESC: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 CallbackQueryHandler(desc_pick, pattern=r"^PRESET::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_PRICE: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, price_step),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_CONFIRM: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 CallbackQueryHandler(inv_confirm_click, pattern=r"^INVCONF::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
             INV_FORCE_NUMBER: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, force_number),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
 
             INVOICES_CLIENT_PICK: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 CallbackQueryHandler(invoices_actions, pattern=r"^INVOICES::"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invoices_search_text),
                 CallbackQueryHandler(invoices_client_pick, pattern=r"^INVCL::"),
@@ -897,7 +901,7 @@ def main():
             ],
 
             INVOICES_LIST: [
-                MessageHandler(filters.Regex(r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures)$"), bottom_router),
+                MessageHandler(filters.Regex(main_buttons_regex), bottom_router),
                 CallbackQueryHandler(invoice_open, pattern=r"^INVFILE::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
