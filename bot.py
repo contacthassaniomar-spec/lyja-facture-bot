@@ -53,15 +53,20 @@ def safe_get(d: dict, *keys, default=""):
 def normalize_company_for_pdf(company: dict) -> dict:
     brand = safe_get(company, "brand", "enseigne", default="")
     legal = safe_get(company, "legal_name", "raison_sociale", "nom", default=brand)
+
     address1 = safe_get(company, "address1", "adresse", "address", default="")
     zip_ = safe_get(company, "zip", "zip_code", "code_postal", "code postal", default="")
     city = safe_get(company, "city", "ville", default="")
     country = safe_get(company, "country", "pays", default="France")
+
     phone = safe_get(company, "phone", "tel", "telephone", default="")
     email = safe_get(company, "email", default="")
     siret = safe_get(company, "siret", default="")
     tva = safe_get(company, "tva", "vat", "vat_number", default="")
-    vat_notice = safe_get(company, "vat_notice", "mention_tva", "tva_notice", default="TVA non applicable, art. 293 B du CGI")
+    vat_notice = safe_get(
+        company, "vat_notice", "mention_tva", "tva_notice",
+        default="TVA non applicable, art. 293 B du CGI"
+    )
 
     return {
         "brand": brand,
@@ -76,7 +81,7 @@ def normalize_company_for_pdf(company: dict) -> dict:
         "tva": tva,
         "vat_notice": vat_notice,
 
-        # variantes
+        # variantes éventuelles
         "nom": legal,
         "enseigne": brand,
         "adresse": address1,
@@ -134,9 +139,8 @@ def normalize_client_for_pdf(client: dict) -> dict:
     INV_CONFIRM,
     INV_FORCE_NUMBER,
     IMPORT_CLIENTS,
-
     INVOICES_CLIENT_PICK,
-    INVOICES_LIST
+    INVOICES_LIST,
 ) = range(16)
 
 
@@ -174,7 +178,6 @@ def client_to_btn(c, prefix="CLIENT::"):
 
 
 def invoice_to_btn(inv: dict):
-    # ex: FACTURE-2026-002 • 26/02/2026 • 1 700,00 €
     num = inv.get("number", "FACTURE")
     issue = (inv.get("issue_date") or "")[:10]
     total = float(inv.get("total_ttc") or 0.0)
@@ -182,7 +185,6 @@ def invoice_to_btn(inv: dict):
     return InlineKeyboardButton(label[:60], callback_data=f"INVFILE::{inv['id']}")
 
 
-# ---------------- Base navigation ----------------
 async def go_menu(update: Update, text="🏠 Menu :", edit=False):
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
@@ -233,7 +235,6 @@ async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return CLIENT_CHOOSE_FOR_INV
 
     if action == "MENU::INVOICES":
-        # Mes factures -> choisir client
         clients = db.list_clients(200)
         if not clients:
             await q.edit_message_text("Aucun client enregistré.", reply_markup=main_menu_keyboard())
@@ -258,6 +259,7 @@ async def clients_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if not clients:
             await q.edit_message_text("Aucun client enregistré.", reply_markup=clients_menu_keyboard())
             return CLIENTS_MENU
+
         kb = [[client_to_btn(c, prefix="CLVIEW::")] for c in clients[:40]]
         kb.append([InlineKeyboardButton("⬅️ Retour clients", callback_data="BACK::CLIENTS")])
         await q.edit_message_text("📋 Liste clients :", reply_markup=InlineKeyboardMarkup(kb))
@@ -338,6 +340,7 @@ async def client_select_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     await q.answer()
     cid = int(q.data.split("::")[1])
     client = db.get_client(cid)
+
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
@@ -345,7 +348,7 @@ async def client_select_for_inv(update: Update, context: ContextTypes.DEFAULT_TY
     return INV_DESC
 
 
-# ---------- AJOUT CLIENT (utilisé par Clients et par Facture) ----------
+# ---------- AJOUT CLIENT ----------
 async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = (update.message.text or "").strip()
     if not name:
@@ -398,11 +401,13 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = db.get_client(cid)
     db.client_folder(client)
 
-    # IMPORTANT : si on venait du flux “Créer une facture”, on continue direct.
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await update.message.reply_text(f"✅ Client ajouté: {client.get('name')}\n\n🧾 Maintenant choisis une description :", reply_markup=presets_keyboard())
+    await update.message.reply_text(
+        f"✅ Client ajouté: {client.get('name')}\n\n🧾 Maintenant choisis une description :",
+        reply_markup=presets_keyboard()
+    )
     return INV_DESC
 
 
@@ -531,9 +536,10 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company_pdf = normalize_company_for_pdf(company)
     client_pdf = normalize_client_for_pdf(client)
 
+    # Génération PDF
     draw_invoice_pdf(pdf_path, company_pdf, client_pdf, invoice_doc, str(logo))
 
-    # Vérif taille (évite "52 octets")
+    # Vérif taille
     try:
         size = pdf_path.stat().st_size
     except FileNotFoundError:
@@ -564,6 +570,8 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await q.edit_message_text("✅ Facture générée. Envoi du PDF…")
+
+    # ✅ ENVOI EN BINAIRE (corrige 52 octets)
     with open(pdf_path, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
 
@@ -649,8 +657,6 @@ async def invoices_client_pick(update: Update, context: ContextTypes.DEFAULT_TYP
     if q.data.startswith("INVCL::"):
         client_id = int(q.data.split("::")[1])
         client = db.get_client(client_id)
-        context.user_data["inv_client_id"] = client_id
-        context.user_data["inv_client"] = client
 
         invs = db.list_invoices_for_client(client_id, limit=50)
         if not invs:
@@ -668,7 +674,6 @@ async def invoices_client_pick(update: Update, context: ContextTypes.DEFAULT_TYP
     if q.data == "BACK::MENU":
         return await go_menu(update, edit=True)
 
-    # si l’utilisateur envoie du texte ici (recherche) on ignore dans ce handler
     return INVOICES_CLIENT_PICK
 
 
@@ -690,7 +695,6 @@ async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
 
     if q.data == "MENU::INVOICES":
-        # revenir à la liste clients
         return await menu_click(update, context)
 
     if not q.data.startswith("INVFILE::"):
@@ -703,11 +707,17 @@ async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await go_menu(update)
 
     pdf_path = inv.get("pdf_path", "")
-    if not pdf_path or not Path(pdf_path).exists():
-        await q.edit_message_text("PDF introuvable (chemin manquant).")
+    p = Path(pdf_path)
+
+    if not pdf_path or not p.exists():
+        await q.edit_message_text(f"PDF introuvable : {pdf_path}")
         return await go_menu(update)
 
-    await q.message.reply_document(document=InputFile(str(pdf_path)), filename=f"{inv.get('number','FACTURE')}.pdf")
+    # ✅ ENVOI EN BINAIRE (corrige 52 octets)
+    filename = f"{inv.get('number','FACTURE')}.pdf"
+    with open(p, "rb") as f:
+        await q.message.reply_document(document=InputFile(f, filename=filename))
+
     return INVOICES_LIST
 
 
