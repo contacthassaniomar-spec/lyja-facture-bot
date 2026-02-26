@@ -1,54 +1,157 @@
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph
+from reportlab.lib.enums import TA_RIGHT
+from reportlab.lib.colors import black, HexColor
 from pathlib import Path
-import os
+from datetime import date
 
-def draw_invoice_pdf(pdf_path, company, client, invoice, logo_path):
-    pdf_path = Path(pdf_path)
-    os.makedirs(pdf_path.parent, exist_ok=True)
 
+def draw_invoice_pdf(pdf_path, entreprise, client, invoice, logo_path: Path | None = None):
     c = canvas.Canvas(str(pdf_path), pagesize=A4)
-    width, height = A4
+    largeur, hauteur = A4
 
+    margin_left = 20 * mm
+    margin_top = hauteur - 20 * mm
+
+    # =====================
     # LOGO
-    if logo_path and Path(logo_path).exists():
-        c.drawImage(str(logo_path), 20 * mm, height - 40 * mm, width=40 * mm, preserveAspectRatio=True)
+    # =====================
+    if logo_path and logo_path.exists():
+        c.drawImage(
+            str(logo_path),
+            largeur - 60 * mm,
+            hauteur - 40 * mm,
+            width=40 * mm,
+            preserveAspectRatio=True,
+            mask='auto'
+        )
 
-    # TITRE
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(120 * mm, height - 30 * mm, f"FACTURE {invoice['number']}")
-
-    # SOCIÉTÉ
-    c.setFont("Helvetica", 10)
-    c.drawString(20 * mm, height - 55 * mm, company["name"])
-    c.drawString(20 * mm, height - 62 * mm, company["address"])
-    c.drawString(20 * mm, height - 69 * mm, f"SIRET : {company['siret']}")
-
-    # CLIENT
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(120 * mm, height - 55 * mm, client["name"])
-    c.setFont("Helvetica", 10)
-    c.drawString(120 * mm, height - 62 * mm, client["address1"])
-    c.drawString(120 * mm, height - 69 * mm, f"{client['zip_code']} {client['city']}")
-
-    # INFOS FACTURE
-    y = height - 100 * mm
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(20 * mm, y, "Description")
-    c.setFont("Helvetica", 10)
-    c.drawString(20 * mm, y - 10 * mm, invoice["description"])
-
-    # TOTAUX
-    y -= 40 * mm
-    c.drawString(120 * mm, y, f"Montant HT : {invoice['total_ht']:.2f} €")
-    c.drawString(120 * mm, y - 10 * mm, "TVA : 0.00 € (art. 293B CGI)")
+    # =====================
+    # ENTREPRISE
+    # =====================
+    y = margin_top
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(120 * mm, y - 22 * mm, f"TOTAL À PAYER : {invoice['total_ttc']:.2f} €")
+    c.drawString(margin_left, y, entreprise.get("name", ""))
 
-    # PIED DE PAGE
+    c.setFont("Helvetica", 10)
+    y -= 5 * mm
+    c.drawString(margin_left, y, entreprise.get("address", ""))
+
+    y -= 5 * mm
+    c.drawString(
+        margin_left,
+        y,
+        f"{entreprise.get('zip', '')} {entreprise.get('city', '')}"
+    )
+
+    y -= 5 * mm
+    c.drawString(margin_left, y, f"SIRET {entreprise.get('siret', '')}")
+
+    if entreprise.get("tva"):
+        y -= 5 * mm
+        c.drawString(margin_left, y, f"TVA {entreprise.get('tva')}")
+
+    # =====================
+    # TITRE FACTURE
+    # =====================
+    c.setFont("Helvetica-Bold", 18)
+    c.drawCentredString(largeur / 2, hauteur - 60 * mm, "FACTURE")
+
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(
+        largeur / 2,
+        hauteur - 68 * mm,
+        f"{invoice['number']}"
+    )
+
+    # =====================
+    # INFOS FACTURE
+    # =====================
+    info_y = hauteur - 85 * mm
+    c.setFont("Helvetica", 10)
+    c.drawRightString(largeur - margin_left, info_y, f"Date de facturation : {invoice['issue_date']}")
+    info_y -= 5 * mm
+    c.drawRightString(largeur - margin_left, info_y, f"Échéance : {invoice['due']}")
+    info_y -= 5 * mm
+    c.drawRightString(largeur - margin_left, info_y, f"Type d’opération : {invoice['operation_type']}")
+
+    # =====================
+    # CLIENT
+    # =====================
+    client_y = hauteur - 105 * mm
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin_left, client_y, client.get("name", ""))
+
+    c.setFont("Helvetica", 10)
+    client_y -= 5 * mm
+    c.drawString(margin_left, client_y, client.get("address1", ""))
+
+    client_y -= 5 * mm
+    c.drawString(
+        margin_left,
+        client_y,
+        f"{client.get('zip_code', '')} {client.get('city', '')}"
+    )
+
+    if client.get("siret"):
+        client_y -= 5 * mm
+        c.drawString(margin_left, client_y, f"SIRET {client.get('siret')}")
+
+    # =====================
+    # TABLE HEADER
+    # =====================
+    table_y = hauteur - 135 * mm
+    c.setFont("Helvetica-Bold", 10)
+
+    c.drawString(margin_left, table_y, "Description")
+    c.drawRightString(largeur - 90 * mm, table_y, "Qté")
+    c.drawRightString(largeur - 70 * mm, table_y, "Unité")
+    c.drawRightString(largeur - 40 * mm, table_y, "Prix")
+    c.drawRightString(largeur - margin_left, table_y, "Total")
+
+    c.line(margin_left, table_y - 2, largeur - margin_left, table_y - 2)
+
+    # =====================
+    # LIGNE FACTURE
+    # =====================
+    line_y = table_y - 10 * mm
+    c.setFont("Helvetica", 10)
+
+    c.drawString(margin_left, line_y, invoice["description"])
+    c.drawRightString(largeur - 90 * mm, line_y, str(invoice["qty"]))
+    c.drawRightString(largeur - 70 * mm, line_y, invoice["unit"])
+    c.drawRightString(largeur - 40 * mm, line_y, f"{invoice['unit_price']:.2f} €")
+    c.drawRightString(largeur - margin_left, line_y, f"{invoice['total_ht']:.2f} €")
+
+    # =====================
+    # TOTALS
+    # =====================
+    total_y = line_y - 20 * mm
+    c.setFont("Helvetica-Bold", 11)
+
+    c.drawRightString(largeur - 40 * mm, total_y, "Total TTC :")
+    c.drawRightString(largeur - margin_left, total_y, f"{invoice['total_ttc']:.2f} €")
+
+    total_y -= 6 * mm
     c.setFont("Helvetica", 9)
-    c.drawString(20 * mm, 20 * mm, "TVA non applicable, art. 293B du CGI")
+    c.drawRightString(
+        largeur - margin_left,
+        total_y,
+        "TVA non applicable, art. 293B du CGI"
+    )
 
-    c.showPage()
+    # =====================
+    # FOOTER
+    # =====================
+    c.setFont("Helvetica", 8)
+    c.setFillColor(HexColor("#555555"))
+    c.drawCentredString(
+        largeur / 2,
+        15 * mm,
+        "Merci pour votre confiance"
+    )
+
     c.save()
