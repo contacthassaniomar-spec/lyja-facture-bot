@@ -249,6 +249,24 @@ def invoice_to_btn(inv: dict):
     return InlineKeyboardButton(label[:60], callback_data=f"INVFILE::{inv['id']}")
 
 
+# ---------------- Text normalizer (IMPORTANT iPhone) ----------------
+def norm_btn(txt: str) -> str:
+    if not txt:
+        return ""
+    t = txt.strip()
+    t = t.replace("\ufe0f", "").replace("\u200d", "")  # invisible emoji modifiers
+    t = " ".join(t.split())
+
+    keep = []
+    for ch in t:
+        if ch.isalnum() or ch in " '-àâäçéèêëîïôöùûüÿœæÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸŒÆ":
+            keep.append(ch)
+        else:
+            keep.append(" ")
+    t2 = " ".join("".join(keep).split()).lower()
+    return t2
+
+
 # ---------------- Navigation helpers ----------------
 async def go_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="🏠 Menu :"):
     context.user_data["nav"] = "HOME"
@@ -259,14 +277,33 @@ async def go_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, text="🏠
 
 # ---------------- Router (boutons SOUS clavier uniquement) ----------------
 async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.message.text or "").strip()
+    raw = (update.message.text or "")
+    t = norm_btn(raw)
     nav = (context.user_data.get("nav") or "HOME").upper()
 
+    # Liste des libellés qu'on accepte comme "boutons"
+    known = {
+        "menu",
+        "clients",
+        "creer une facture",
+        "créer une facture",
+        "mes factures",
+        "liste clients",
+        "ajouter client",
+        "import clients",
+        "rechercher client",
+        "retour",
+    }
+
+    # si ce n'est pas un bouton => on laisse les autres handlers gérer
+    if t not in known:
+        return None
+
     # MAIN
-    if txt == "🏠 Menu":
+    if t == "menu":
         return await go_menu(update, context, "🏠 Menu :")
 
-    if txt == "👥 Clients":
+    if t == "clients":
         context.user_data["nav"] = "CLIENTS"
         await update.message.reply_text(" ", reply_markup=bottom_nav(context))
         await ui_show(update, context, "👥 Clients — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
@@ -274,7 +311,7 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]))
         return CLIENTS_MENU
 
-    if txt == "🧾 Créer une facture":
+    if t in ("creer une facture", "créer une facture"):
         context.user_data.pop("client_id", None)
         context.user_data.pop("client", None)
         context.user_data.pop("new_client", None)
@@ -285,7 +322,7 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]))
         return CLIENT_CHOOSE_FOR_INV
 
-    if txt == "🗂️ Mes factures":
+    if t == "mes factures":
         context.user_data["nav"] = "INVOICES"
         await update.message.reply_text(" ", reply_markup=bottom_nav(context))
         await ui_show(update, context, "🗂️ Mes factures — utilise les dossiers en bas 👇", InlineKeyboardMarkup([
@@ -293,19 +330,18 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]))
         return INVOICES_CLIENT_PICK
 
-    # RETOUR (sous-menus)
-    if txt == "⬅️ Retour":
+    if t == "retour":
         return await go_menu(update, context, "🏠 Menu :")
 
     # ----- SUB: NEW_INV -----
-    if nav == "NEW_INV" and txt == "🔎 Rechercher client":
+    if nav == "NEW_INV" and t == "rechercher client":
         context.user_data["pending_search_mode"] = "NEW_INV"
         await ui_show(update, context, "🔎 Recherche client\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_SEARCH_FOR_INV
 
-    if nav == "NEW_INV" and txt == "📋 Liste clients":
+    if nav == "NEW_INV" and t == "liste clients":
         clients = db.list_clients(200)
         if not clients:
             await ui_show(update, context, "Aucun client enregistré.", InlineKeyboardMarkup([
@@ -318,14 +354,14 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ui_show(update, context, "📋 Choisis un client :", InlineKeyboardMarkup(kb))
         return CLIENT_CHOOSE_FOR_INV
 
-    if nav == "NEW_INV" and txt == "➕ Ajouter client":
+    if nav == "NEW_INV" and t == "ajouter client":
         await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
 
     # ----- SUB: CLIENTS -----
-    if nav == "CLIENTS" and txt == "📋 Liste clients":
+    if nav == "CLIENTS" and t == "liste clients":
         clients = db.list_clients(200)
         if not clients:
             await ui_show(update, context, "Aucun client enregistré.", InlineKeyboardMarkup([
@@ -338,13 +374,13 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ui_show(update, context, "📋 Liste clients :", InlineKeyboardMarkup(kb))
         return CLIENTS_MENU
 
-    if nav == "CLIENTS" and txt == "➕ Ajouter client":
+    if nav == "CLIENTS" and t == "ajouter client":
         await ui_show(update, context, "➕ Nouveau client\nNom du client ? (réponds dans le chat)", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return CLIENT_ADD_NAME
 
-    if nav == "CLIENTS" and txt == "📥 Import clients":
+    if nav == "CLIENTS" and t == "import clients":
         await ui_show(update, context,
                       "📥 Import clients\n\n"
                       "Colle tes clients (1 par ligne) au format :\n"
@@ -355,14 +391,14 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return IMPORT_CLIENTS
 
     # ----- SUB: INVOICES -----
-    if nav == "INVOICES" and txt == "🔎 Rechercher client":
+    if nav == "INVOICES" and t == "rechercher client":
         context.user_data["pending_search_mode"] = "INVOICES"
         await ui_show(update, context, "🔎 Recherche client (Mes factures)\nTape le nom / email / tel :", InlineKeyboardMarkup([
             [InlineKeyboardButton("🏠 Menu", callback_data="BACK::MENU")]
         ]))
         return INVOICES_CLIENT_PICK
 
-    if nav == "INVOICES" and txt == "📋 Liste clients":
+    if nav == "INVOICES" and t == "liste clients":
         clients = db.list_clients(200)
         if not clients:
             await ui_show(update, context, "Aucun client enregistré.", InlineKeyboardMarkup([
@@ -375,7 +411,7 @@ async def nav_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ui_show(update, context, "🗂️ Choisis un client :", InlineKeyboardMarkup(kb))
         return INVOICES_CLIENT_PICK
 
-    return MENU
+    return None
 
 
 # ---------------- Handlers ----------------
@@ -852,9 +888,8 @@ def main():
     db.init_db()
     app = Application.builder().token(token).build()
 
-    # ✅ IMPORTANT : on intercepte UNIQUEMENT les textes des boutons du bas
-    NAV_REGEX = r"^(🏠 Menu|👥 Clients|🧾 Créer une facture|🗂️ Mes factures|📋 Liste clients|➕ Ajouter client|📥 Import clients|🔎 Rechercher client|⬅️ Retour)$"
-    nav_handler = MessageHandler(filters.Regex(NAV_REGEX), nav_router)
+    # ✅ IMPORTANT : on capte tous les textes, et nav_router filtre lui-même
+    nav_handler = MessageHandler(filters.TEXT & ~filters.COMMAND, nav_router)
 
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
