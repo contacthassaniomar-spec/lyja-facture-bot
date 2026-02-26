@@ -234,7 +234,7 @@ async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return INV_DESC
 
     context.user_data["description"] = val
-    await q.edit_message_text("Prix HT ? (ex: 738 ou 738,00)")
+    await q.edit_message_text("Montant à facturer (TTC – TVA non applicable)")
     return INV_PRICE
 
 async def desc_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -243,7 +243,7 @@ async def desc_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Description vide. Réessaie.")
         return INV_DESC
     context.user_data["description"] = desc
-    await update.message.reply_text("Prix HT ? (ex: 738 ou 738,00)")
+    await update.message.reply_text("Montant à facturer (TTC – TVA non applicable)")
     return INV_PRICE
 
 async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
