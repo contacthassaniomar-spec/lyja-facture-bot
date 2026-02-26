@@ -1,127 +1,131 @@
-from __future__ import annotations
-import os
-from typing import Dict, Any
+from pathlib import Path
+from datetime import date
 from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.pdfgen.canvas import Canvas
-from reportlab.platypus import Table, TableStyle
 from reportlab.lib.utils import ImageReader
 
 def eur(x: float) -> str:
-    s = f"{x:,.2f}".replace(",", "X").replace(".", ",").replace("X", " ")
-    return f"{s} €"
+    return f"{x:,.2f} €".replace(",", " ").replace(".", ",")
 
-def build_invoice_pdf(out_path: str, cfg: Dict[str, Any], invoice: Dict[str, Any], seller: Dict[str, Any], client: Dict[str, Any]) -> str:
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    c = Canvas(out_path, pagesize=A4)
-    w, h = A4
+def safe_str(v):
+    return (v or "").strip()
+
+def draw_invoice_pdf(
+    out_path: Path,
+    company: dict,
+    client: dict,
+    invoice: dict,
+    logo_path: Path | None
+):
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    c = canvas.Canvas(str(out_path), pagesize=A4)
+    W, H = A4
 
     left = 20 * mm
-    right = w - 20 * mm
-    top = h - 20 * mm
-    y = top
+    right = W - 20 * mm
+    top = H - 20 * mm
 
-    # Logo (optionnel)
-    logo_path = (cfg.get("branding", {}) or {}).get("logo_path")
-    if logo_path and os.path.exists(logo_path):
+    # LOGO (top-left)
+    y = top
+    if logo_path and logo_path.exists():
         try:
-            img = ImageReader(logo_path)
-            c.drawImage(img, left, y - 22*mm, width=32*mm, height=22*mm, preserveAspectRatio=True, mask='auto')
-        except Exception:
+            img = ImageReader(str(logo_path))
+            c.drawImage(img, left, y - 18*mm, width=40*mm, height=18*mm, mask='auto')
+        except:
             pass
 
-    # Titre
-    c.setFont("Helvetica-Bold", 12)
-    c.drawRightString(right, y - 4*mm, f"FACTURE - {invoice['number']}")
+    # TITLE (top-right)
+    c.setFont("Helvetica-Bold", 18)
+    c.drawRightString(right, y - 5*mm, f"{invoice['title']}")
 
-    c.setFont("Helvetica", 8)
-    c.drawRightString(right, y - 10*mm, f"Date de facturation: {invoice['issue_date']}")
-    c.drawRightString(right, y - 14*mm, f"Échéance: {invoice['due_text']}")
-    c.drawRightString(right, y - 18*mm, f"Type d'opération: {invoice['operation_type']}")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(right, y - 12*mm, f"Date de facturation: {invoice['issue_date'].strftime('%d/%m/%Y')}")
+    c.drawRightString(right, y - 17*mm, f"Échéance: {invoice['due']}")
+    c.drawRightString(right, y - 22*mm, f"Type d'opération: {invoice['operation_type']}")
 
-    # Bloc vendeur (gauche)
+    # COMPANY BLOCK (left)
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left, y - 30*mm, safe_str(company.get("legal_name") or company.get("brand")))
+    c.setFont("Helvetica", 10)
+    c.drawString(left, y - 35*mm, safe_str(company.get("address1")))
+    c.drawString(left, y - 40*mm, f"{safe_str(company.get('zip'))} {safe_str(company.get('city'))}")
+    if safe_str(company.get("phone")):
+        c.drawString(left, y - 45*mm, safe_str(company.get("phone")))
+    if safe_str(company.get("email")):
+        c.drawString(left, y - 50*mm, safe_str(company.get("email")))
+
+    # ✅ TVA line under YOUR block (not client's)
+    c.setFont("Helvetica", 9)
+    if safe_str(company.get("siret")):
+        c.drawString(left, y - 58*mm, f"Numéro de SIRET {safe_str(company.get('siret'))}")
+    if safe_str(company.get("vat_notice")):
+        c.drawString(left, y - 63*mm, safe_str(company.get("vat_notice")))
+
+    # CLIENT BLOCK (right)
+    cx = right - 80*mm
+    cy = y - 35*mm
     c.setFont("Helvetica-Bold", 11)
-    c.drawString(left, y - 40*mm, seller.get("brand_name",""))
+    c.drawString(cx, cy, safe_str(client["name"]))
+    c.setFont("Helvetica", 11)
+    if safe_str(client.get("address1")):
+        c.drawString(cx, cy - 6*mm, safe_str(client.get("address1")))
+    line2 = " ".join([safe_str(client.get("zip")), safe_str(client.get("city"))]).strip()
+    if line2:
+        c.drawString(cx, cy - 12*mm, line2)
+    if safe_str(client.get("country")):
+        c.drawString(cx, cy - 18*mm, safe_str(client.get("country")))
+
+    # SIRET/TVA client (optional)
     c.setFont("Helvetica", 9)
-    lines = [
-        seller.get("legal_name",""),
-        *(seller.get("address_lines") or []),
-        seller.get("phone",""),
-        seller.get("email",""),
-    ]
-    yy = y - 46*mm
-    for ln in [l for l in lines if l]:
-        c.drawString(left, yy, ln)
-        yy -= 5*mm
+    if safe_str(client.get("siret")):
+        c.drawString(cx, cy - 26*mm, f"Numéro de SIRET {safe_str(client.get('siret'))}")
+    if safe_str(client.get("tva")):
+        c.drawString(cx, cy - 31*mm, f"Numéro de TVA {safe_str(client.get('tva'))}")
 
-    # ✅ SIRET + TVA sous tes infos (vendeur)
-    c.setFont("Helvetica", 8)
-    if seller.get("siret"):
-        c.drawString(left, yy, f"Numéro de SIRET {seller.get('siret')}")
-        yy -= 4.5*mm
-    if seller.get("vat_note"):
-        c.drawString(left, yy, seller.get("vat_note"))
-        yy -= 4.5*mm
+    # TABLE
+    table_top = y - 80*mm
+    c.setLineWidth(0.6)
+    c.line(left, table_top, right, table_top)
 
-    # Bloc client (droite)
-    c.setFont("Helvetica-Bold", 9.5)
-    c.drawString(w/2 + 10*mm, y - 48*mm, (client.get("name") or "").upper())
+    headers = ["No.", "Description", "Date", "Qté", "Unité", "Prix unitaire", "TVA", "Montant"]
+    cols = [left, left+12*mm, left+95*mm, left+120*mm, left+132*mm, left+150*mm, left+172*mm, left+185*mm]
+    c.setFont("Helvetica-Bold", 9)
+    for i,hdr in enumerate(headers):
+        c.drawString(cols[i], table_top - 6*mm, hdr)
+
     c.setFont("Helvetica", 9)
-    c.drawString(w/2 + 10*mm, y - 54*mm, client.get("address1") or "")
-    c.drawString(w/2 + 10*mm, y - 59*mm, f"{client.get('zip','') or ''} {client.get('city','') or ''}".strip())
+    row_y = table_top - 14*mm
+    c.drawString(cols[0], row_y, "1")
+    c.drawString(cols[1], row_y, safe_str(invoice["description"])[:60])
+    c.drawString(cols[2], row_y, invoice["issue_date"].strftime("%d/%m/%Y"))
+    c.drawRightString(cols[3]+10*mm, row_y, str(invoice["qty"]))
+    c.drawString(cols[4], row_y, safe_str(invoice["unit"]))
+    c.drawRightString(cols[5]+18*mm, row_y, eur(invoice["unit_price"]))
+    c.drawRightString(cols[6]+10*mm, row_y, f"{invoice['tax_rate']:.2f} %".replace(".", ","))
+    c.drawRightString(right, row_y, eur(invoice["total_ht"]))
 
-    # Tableau
-    table_top = y - 105*mm
-    data = [
-        ["No.", "Description", "Date", "Qté", "Unité", "Prix unitaire", "TVA", "Montant"],
-        [
-            "1",
-            invoice["description"],
-            invoice["issue_date"],
-            f"{invoice['qty']:.2f}".replace(".", ","),
-            invoice["unit"],
-            eur(invoice["unit_price"]),
-            f"{invoice['vat_rate']:.2f} %".replace(".", ","),
-            eur(invoice["total_ht"]),
-        ],
-    ]
+    c.line(left, row_y - 4*mm, right, row_y - 4*mm)
 
-    col_widths = [10*mm, 64*mm, 20*mm, 12*mm, 14*mm, 24*mm, 14*mm, 22*mm]
-    t = Table(data, colWidths=col_widths, rowHeights=[8*mm, 8*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#E6E6E6")),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("FONTSIZE", (0,0), (-1,-1), 8),
-        ("ALIGN", (0,0), (0,-1), "CENTER"),
-        ("ALIGN", (2,1), (-1,-1), "CENTER"),
-        ("ALIGN", (1,1), (1,1), "LEFT"),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#BDBDBD")),
-        ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
-    ]))
-    tw, th = t.wrapOn(c, right-left, h)
-    t.drawOn(c, left, table_top - th)
-
-    # Totaux
-    totals_y = table_top - th - 12*mm
-    c.setFont("Helvetica", 8.5)
-    c.drawRightString(right - 24*mm, totals_y, "Total HT")
+    # TOTALS (bottom-right)
+    totals_y = row_y - 20*mm
+    c.setFont("Helvetica", 10)
+    c.drawRightString(right - 25*mm, totals_y, "Total HT")
     c.drawRightString(right, totals_y, eur(invoice["total_ht"]))
-    totals_y -= 5*mm
-    c.drawRightString(right - 24*mm, totals_y, f"TVA {invoice['vat_rate']:.2f} %".replace(".", ","))
-    c.drawRightString(right, totals_y, eur(invoice["total_vat"]))
-    totals_y -= 6*mm
-    c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(right - 24*mm, totals_y, "Total TTC")
-    c.drawRightString(right, totals_y, eur(invoice["total_ttc"]))
+    c.drawRightString(right - 25*mm, totals_y - 6*mm, f"TVA {invoice['tax_rate']:.2f} %".replace(".", ","))
+    c.drawRightString(right, totals_y - 6*mm, eur(invoice["total_tva"]))
+    c.setFont("Helvetica-Bold", 10)
+    c.drawRightString(right - 25*mm, totals_y - 12*mm, "Total TTC")
+    c.drawRightString(right, totals_y - 12*mm, eur(invoice["total_ttc"]))
 
-    # Footer
-    c.setFont("Helvetica-Bold", 9)
-    c.drawCentredString(w/2, 20*mm, seller.get("brand_name",""))
-    c.setFont("Helvetica", 7.5)
-    if seller.get("footer_line",""):
-        c.drawCentredString(w/2, 16*mm, seller.get("footer_line",""))
+    # FOOTER (bottom center) ✅ restores "bottom of page"
+    footer_y = 15 * mm
+    c.setFont("Helvetica", 8)
+    footer_line = f"{safe_str(company.get('legal_name') or company.get('brand'))} — {safe_str(company.get('address1'))} — {safe_str(company.get('zip'))} {safe_str(company.get('city'))}"
+    c.drawCentredString(W/2, footer_y + 6*mm, footer_line)
+    if safe_str(company.get("siret")):
+        c.drawCentredString(W/2, footer_y, f"Numéro de SIRET : {safe_str(company.get('siret'))}")
 
     c.showPage()
     c.save()
-    return out_path
