@@ -53,12 +53,10 @@ def safe_get(d: dict, *keys, default=""):
 def normalize_company_for_pdf(company: dict) -> dict:
     brand = safe_get(company, "brand", "enseigne", default="")
     legal = safe_get(company, "legal_name", "raison_sociale", "nom", default=brand)
-
     address1 = safe_get(company, "address1", "adresse", "address", default="")
     zip_ = safe_get(company, "zip", "zip_code", "code_postal", "code postal", default="")
     city = safe_get(company, "city", "ville", default="")
     country = safe_get(company, "country", "pays", default="France")
-
     phone = safe_get(company, "phone", "tel", "telephone", default="")
     email = safe_get(company, "email", default="")
     siret = safe_get(company, "siret", default="")
@@ -110,7 +108,6 @@ def normalize_client_for_pdf(client: dict) -> dict:
         "siret": siret,
         "tva": tva,
 
-        # variantes
         "nom": name,
         "adresse": address1,
         "zip_code": zip_,
@@ -124,24 +121,22 @@ def normalize_client_for_pdf(client: dict) -> dict:
 # ---------------- States ----------------
 (
     MENU,
-
     CLIENTS_MENU,
-    CLIENT_SEARCH,
+    CLIENT_CHOOSE_FOR_INV,
+    CLIENT_SEARCH_FOR_INV,
     CLIENT_ADD_NAME,
     CLIENT_ADD_ADDR,
     CLIENT_ADD_CITYZIP,
     CLIENT_ADD_SIRET,
     CLIENT_ADD_TVA,
-    IMPORT_CLIENTS,
-
-    INV_CLIENT_CHOOSE,
     INV_DESC,
     INV_PRICE,
     INV_CONFIRM,
     INV_FORCE_NUMBER,
+    IMPORT_CLIENTS,
 
-    INVOICES_CLIENT_CHOOSE,
-    INVOICES_LIST,
+    INVOICES_CLIENT_PICK,
+    INVOICES_LIST
 ) = range(16)
 
 
@@ -150,22 +145,15 @@ def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🧾 Créer une facture", callback_data="MENU::NEW_INV")],
         [InlineKeyboardButton("👥 Clients", callback_data="MENU::CLIENTS")],
-        [InlineKeyboardButton("📂 Mes factures", callback_data="MENU::INVOICES")],
+        [InlineKeyboardButton("🗂️ Mes factures", callback_data="MENU::INVOICES")],
     ])
 
 
 def clients_menu_keyboard():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Clients (liste)", callback_data="CLIENTS::LIST")],
+        [InlineKeyboardButton("👥 Voir la liste", callback_data="CLIENTS::LIST")],
         [InlineKeyboardButton("➕ Ajouter un client", callback_data="CLIENTS::ADD")],
         [InlineKeyboardButton("📥 Import clients", callback_data="CLIENTS::IMPORT")],
-        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
-    ])
-
-
-def invoices_menu_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📂 Par client", callback_data="INVS::BY_CLIENT")],
         [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
 
@@ -174,23 +162,34 @@ def presets_keyboard():
     presets = CFG.get("invoice", {}).get("description_presets", [])
     rows = [[InlineKeyboardButton(p, callback_data=f"PRESET::{p}")] for p in presets]
     rows.append([InlineKeyboardButton("✍️ Saisie manuelle", callback_data="PRESET::MANUAL")])
-    rows.append([InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")])
+    rows.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
     return InlineKeyboardMarkup(rows)
 
 
-def client_to_btn(c, prefix="CLIENT"):
+def client_to_btn(c, prefix="CLIENT::"):
     label = c.get("name") or c.get("nom") or "Client"
     if c.get("city"):
         label += f" — {c['city']}"
-    return InlineKeyboardButton(label[:60], callback_data=f"{prefix}::{c['id']}")
+    return InlineKeyboardButton(label[:60], callback_data=f"{prefix}{c['id']}")
 
 
 def invoice_to_btn(inv: dict):
-    # exemple: "FACTURE-2026-003 — 1 700,00 €"
+    # ex: FACTURE-2026-002 • 26/02/2026 • 1 700,00 €
     num = inv.get("number", "FACTURE")
-    total = float(inv.get("total_ttc", 0.0))
-    label = f"{num} — {total:,.2f} €".replace(",", " ").replace(".", ",")
-    return InlineKeyboardButton(label[:60], callback_data=f"INVOICE::{inv['id']}")
+    issue = (inv.get("issue_date") or "")[:10]
+    total = float(inv.get("total_ttc") or 0.0)
+    label = f"{num} • {issue} • {total:,.2f} €".replace(",", " ").replace(".", ",")
+    return InlineKeyboardButton(label[:60], callback_data=f"INVFILE::{inv['id']}")
+
+
+# ---------------- Base navigation ----------------
+async def go_menu(update: Update, text="🏠 Menu :", edit=False):
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
+    else:
+        if update.effective_message:
+            await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard())
+    return MENU
 
 
 # ---------------- Handlers ----------------
@@ -200,82 +199,75 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     db.init_db()
-    await update.message.reply_text("✅ Bot facture en ligne.\nChoisis une action :", reply_markup=main_menu_keyboard())
+    context.user_data.clear()
+    await update.message.reply_text("✅ Bot Facture en ligne.\nChoisis une action :", reply_markup=main_menu_keyboard())
     return MENU
 
 
 async def back_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
+    await update.callback_query.answer()
+    return await go_menu(update, edit=True)
 
 
+# ---------- MENU ----------
 async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     action = q.data
 
     if action == "MENU::CLIENTS":
-        await q.edit_message_text("👥 Clients — choisis :", reply_markup=clients_menu_keyboard())
+        await q.edit_message_text("👥 Clients — choisis une action :", reply_markup=clients_menu_keyboard())
         return CLIENTS_MENU
-
-    if action == "MENU::INVOICES":
-        await q.edit_message_text("📂 Mes factures — choisis :", reply_markup=invoices_menu_keyboard())
-        return MENU  # on reste en MENU, mais route via INVS::
 
     if action == "MENU::NEW_INV":
         context.user_data.clear()
+        await q.edit_message_text(
+            "🧾 Nouvelle facture — choisis le client :",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔎 Rechercher un client", callback_data="INVCLIENT::SEARCH")],
+                [InlineKeyboardButton("📋 Choisir dans la liste", callback_data="INVCLIENT::LIST")],
+                [InlineKeyboardButton("➕ Ajouter un client", callback_data="INVCLIENT::ADD")],
+                [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
+            ])
+        )
+        return CLIENT_CHOOSE_FOR_INV
+
+    if action == "MENU::INVOICES":
+        # Mes factures -> choisir client
         clients = db.list_clients(200)
-
         if not clients:
-            await q.edit_message_text(
-                "Aucun client enregistré.\nAjoute un client d'abord 👇",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("➕ Ajouter un client", callback_data="CLIENTS::ADD")],
-                    [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
-                ])
-            )
-            return CLIENTS_MENU
+            await q.edit_message_text("Aucun client enregistré.", reply_markup=main_menu_keyboard())
+            return MENU
 
-        kb = [[client_to_btn(c, prefix="INVCLIENT")] for c in clients[:40]]
-        kb.append([InlineKeyboardButton("🔎 Rechercher", callback_data="INVCLIENTMODE::SEARCH")])
-        kb.append([InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")])
+        kb = [[client_to_btn(c, prefix="INVCL::")] for c in clients[:40]]
+        kb.append([InlineKeyboardButton("🔎 Rechercher", callback_data="INVCLMODE::SEARCH")])
+        kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
+        await q.edit_message_text("🗂️ Mes factures — choisis un client :", reply_markup=InlineKeyboardMarkup(kb))
+        return INVOICES_CLIENT_PICK
 
-        await q.edit_message_text("🧾 Choisis le client pour la facture :", reply_markup=InlineKeyboardMarkup(kb))
-        return INV_CLIENT_CHOOSE
-
-    await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
+    return await go_menu(update, edit=True)
 
 
-# -------- CLIENTS SUBMENU --------
+# ---------- CLIENTS MENU ----------
 async def clients_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    action = q.data
 
-    if action == "CLIENTS::LIST":
-        clients = db.list_clients(300)
+    if q.data == "CLIENTS::LIST":
+        clients = db.list_clients(200)
         if not clients:
             await q.edit_message_text("Aucun client enregistré.", reply_markup=clients_menu_keyboard())
             return CLIENTS_MENU
-
-        kb = [[client_to_btn(c, prefix="CLIENTVIEW")] for c in clients[:50]]
-        kb.append([InlineKeyboardButton("🔎 Rechercher", callback_data="CLIENTS::SEARCH")])
-        kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="CLIENTS::BACK")])
-        await q.edit_message_text("👥 Clients (choisis-en un) :", reply_markup=InlineKeyboardMarkup(kb))
+        kb = [[client_to_btn(c, prefix="CLVIEW::")] for c in clients[:40]]
+        kb.append([InlineKeyboardButton("⬅️ Retour clients", callback_data="BACK::CLIENTS")])
+        await q.edit_message_text("📋 Liste clients :", reply_markup=InlineKeyboardMarkup(kb))
         return CLIENTS_MENU
 
-    if action == "CLIENTS::SEARCH":
-        await q.edit_message_text("Tape le nom / email / tel du client :")
-        return CLIENT_SEARCH
-
-    if action == "CLIENTS::ADD":
-        await q.edit_message_text("Nom du client ? (ex: HOCIPHONE)")
+    if q.data == "CLIENTS::ADD":
+        await q.edit_message_text("➕ Nouveau client\n\nNom du client ? (ex: HOCIPHONE)")
         return CLIENT_ADD_NAME
 
-    if action == "CLIENTS::IMPORT":
+    if q.data == "CLIENTS::IMPORT":
         await q.edit_message_text(
             "📥 Import clients\n\n"
             "Colle tes clients (1 par ligne) au format :\n"
@@ -287,27 +279,73 @@ async def clients_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return IMPORT_CLIENTS
 
-    if action == "CLIENTS::BACK":
-        await q.edit_message_text("👥 Clients — choisis :", reply_markup=clients_menu_keyboard())
-        return CLIENTS_MENU
+    if q.data == "BACK::MENU":
+        return await go_menu(update, edit=True)
 
-    await q.edit_message_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
-
-
-async def client_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = (update.message.text or "").strip()
-    results = db.search_clients(query, 30)
-    if not results:
-        await update.message.reply_text("Aucun résultat. Réessaie.")
-        return CLIENT_SEARCH
-
-    kb = [[client_to_btn(c, prefix="CLIENTVIEW")] for c in results]
-    kb.append([InlineKeyboardButton("⬅️ Retour clients", callback_data="CLIENTS::BACK")])
-    await update.message.reply_text("Résultats :", reply_markup=InlineKeyboardMarkup(kb))
     return CLIENTS_MENU
 
 
+async def back_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    await update.callback_query.edit_message_text("👥 Clients — choisis une action :", reply_markup=clients_menu_keyboard())
+    return CLIENTS_MENU
+
+
+# ---------- CHOIX CLIENT POUR FACTURE ----------
+async def inv_client_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "INVCLIENT::SEARCH":
+        await q.edit_message_text("🔎 Recherche client\nTape le nom / email / tel :")
+        return CLIENT_SEARCH_FOR_INV
+
+    if q.data == "INVCLIENT::LIST":
+        clients = db.list_clients(200)
+        if not clients:
+            await q.edit_message_text("Aucun client enregistré.", reply_markup=main_menu_keyboard())
+            return MENU
+        kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in clients[:40]]
+        kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
+        await q.edit_message_text("📋 Choisis un client :", reply_markup=InlineKeyboardMarkup(kb))
+        return CLIENT_CHOOSE_FOR_INV
+
+    if q.data == "INVCLIENT::ADD":
+        await q.edit_message_text("➕ Nouveau client\nNom du client ?")
+        return CLIENT_ADD_NAME
+
+    if q.data == "BACK::MENU":
+        return await go_menu(update, edit=True)
+
+    return CLIENT_CHOOSE_FOR_INV
+
+
+async def client_search_for_inv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = (update.message.text or "").strip()
+    results = db.search_clients(query, 20)
+    if not results:
+        await update.message.reply_text("Aucun résultat. Réessaie.")
+        return CLIENT_SEARCH_FOR_INV
+
+    kb = [[client_to_btn(c, prefix="INVCLIENTSEL::")] for c in results]
+    kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
+    await update.message.reply_text("Résultats :", reply_markup=InlineKeyboardMarkup(kb))
+    return CLIENT_CHOOSE_FOR_INV
+
+
+async def client_select_for_inv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.split("::")[1])
+    client = db.get_client(cid)
+    context.user_data["client_id"] = cid
+    context.user_data["client"] = client
+
+    await q.edit_message_text("🧾 Facture — choisis une description :", reply_markup=presets_keyboard())
+    return INV_DESC
+
+
+# ---------- AJOUT CLIENT (utilisé par Clients et par Facture) ----------
 async def add_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     name = (update.message.text or "").strip()
     if not name:
@@ -360,76 +398,15 @@ async def add_client_tva(update: Update, context: ContextTypes.DEFAULT_TYPE):
     client = db.get_client(cid)
     db.client_folder(client)
 
-    await update.message.reply_text(f"✅ Client ajouté: {client.get('name')}", reply_markup=clients_menu_keyboard())
-    return CLIENTS_MENU
-
-
-async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = (update.message.text or "").strip()
-    lines = [l.strip() for l in txt.splitlines() if l.strip()]
-    ok, bad = 0, 0
-
-    for line in lines:
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) < 4:
-            bad += 1
-            continue
-
-        name = parts[0]
-        address1 = parts[1]
-        zip_code = parts[2]
-        city = parts[3]
-        siret = parts[4] if len(parts) > 4 else ""
-        tva = parts[5] if len(parts) > 5 else ""
-
-        if siret == "-":
-            siret = ""
-        if tva == "-":
-            tva = ""
-
-        cid = db.add_client(
-            name=name,
-            address1=address1,
-            zip_code=zip_code,
-            city=city,
-            country="France",
-            siret=siret,
-            tva=tva
-        )
-        client = db.get_client(cid)
-        db.client_folder(client)
-        ok += 1
-
-    await update.message.reply_text(
-        f"✅ Import terminé\nAjoutés: {ok}\nIgnorés: {bad}",
-        reply_markup=clients_menu_keyboard()
-    )
-    return CLIENTS_MENU
-
-
-# -------- CREATE INVOICE FLOW --------
-async def invclient_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    if q.data == "INVCLIENTMODE::SEARCH":
-        await q.edit_message_text("Tape le nom / email / tel du client :")
-        return CLIENT_SEARCH
-    return INV_CLIENT_CHOOSE
-
-
-async def invclient_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    cid = int(q.data.split("::")[1])
-    client = db.get_client(cid)
-
+    # IMPORTANT : si on venait du flux “Créer une facture”, on continue direct.
     context.user_data["client_id"] = cid
     context.user_data["client"] = client
 
-    await q.edit_message_text("Choisis une description (ou saisie manuelle) :", reply_markup=presets_keyboard())
+    await update.message.reply_text(f"✅ Client ajouté: {client.get('name')}\n\n🧾 Maintenant choisis une description :", reply_markup=presets_keyboard())
     return INV_DESC
 
 
+# ---------- DESCRIPTION ----------
 async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -440,7 +417,7 @@ async def desc_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return INV_DESC
 
     context.user_data["description"] = val
-    await q.edit_message_text("Montant à facturer (TTC – TVA non applicable)")
+    await q.edit_message_text("💶 Montant à facturer (TTC – TVA non applicable)")
     return INV_PRICE
 
 
@@ -450,7 +427,7 @@ async def desc_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Description vide. Réessaie.")
         return INV_DESC
     context.user_data["description"] = desc
-    await update.message.reply_text("Montant à facturer (TTC – TVA non applicable)")
+    await update.message.reply_text("💶 Montant à facturer (TTC – TVA non applicable)")
     return INV_PRICE
 
 
@@ -461,12 +438,12 @@ def recap_message(context) -> str:
     desc = context.user_data["description"]
 
     msg = (
-        f"📌 Récap:\n"
-        f"Client: {client.get('name')}\n"
-        f"Description: {desc}\n"
-        f"Montant TTC (TVA non applicable): {price:.2f} €\n"
-        f"N°: {number}\n\n"
-        f"✅ Confirmer ? (ou modifier le numéro)"
+        f"📌 Récapitulatif\n"
+        f"• Client : {client.get('name')}\n"
+        f"• Description : {desc}\n"
+        f"• Montant TTC : {price:.2f} € (TVA non applicable)\n"
+        f"• Numéro : {number}\n\n"
+        f"✅ Confirmer ?"
     ).replace(".", ",")
     return msg
 
@@ -475,7 +452,7 @@ async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         price = money_to_float(update.message.text)
     except Exception:
-        await update.message.reply_text("Montant invalide. Exemple: 2600 ou 2600,00")
+        await update.message.reply_text("Montant invalide. Exemple: 1700 ou 1700,00")
         return INV_PRICE
 
     context.user_data["unit_price"] = price
@@ -491,7 +468,7 @@ async def price_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
         [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
-        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")],
+        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
 
     await update.message.reply_text(recap_message(context), reply_markup=kb)
@@ -548,16 +525,15 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "total_ht": total_ht,
         "total_tva": total_tva,
         "total_ttc": total_ttc,
-        "vat_notice": safe_get(company, "vat_notice", default="TVA non applicable, art. 293 B du CGI")
     }
 
     logo = get_logo_path()
-
     company_pdf = normalize_company_for_pdf(company)
     client_pdf = normalize_client_for_pdf(client)
 
-    draw_invoice_pdf(pdf_path, company_pdf, client_pdf, invoice_doc, logo)
+    draw_invoice_pdf(pdf_path, company_pdf, client_pdf, invoice_doc, str(logo))
 
+    # Vérif taille (évite "52 octets")
     try:
         size = pdf_path.stat().st_size
     except FileNotFoundError:
@@ -566,10 +542,9 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if size < 800:
         await q.edit_message_text(
             f"❌ PDF invalide (taille: {size} octets).\n"
-            "➡️ Vérifie : reportlab dans requirements.txt + logo_path + logs Railway."
+            "➡️ Vérifie : reportlab dans requirements.txt + logo_path."
         )
-        await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
-        return MENU
+        return await go_menu(update)
 
     db.save_invoice(
         client_id=client["id"],
@@ -592,8 +567,7 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(pdf_path, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
 
-    await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
+    return await go_menu(update)
 
 
 async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -616,80 +590,125 @@ async def force_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Générer PDF", callback_data="INV::CONFIRM")],
         [InlineKeyboardButton("✏️ Modifier numéro", callback_data="INV::FORCE_NUMBER")],
-        [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")],
+        [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
     ])
     await update.message.reply_text(recap_message(context), reply_markup=kb)
     return INV_CONFIRM
 
 
-# -------- MES FACTURES --------
-async def invoices_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
+# ---------- IMPORT ----------
+async def import_clients(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").strip()
+    lines = [l.strip() for l in txt.splitlines() if l.strip()]
+    ok, bad = 0, 0
 
-    if q.data == "INVS::BY_CLIENT":
-        clients = db.list_clients(300)
-        if not clients:
-            await q.edit_message_text("Aucun client.", reply_markup=main_menu_keyboard())
-            return MENU
+    for line in lines:
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 4:
+            bad += 1
+            continue
 
-        kb = [[client_to_btn(c, prefix="INVSCLIENT")] for c in clients[:50]]
-        kb.append([InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")])
-        await q.edit_message_text("📂 Choisis un client :", reply_markup=InlineKeyboardMarkup(kb))
-        return INVOICES_CLIENT_CHOOSE
+        name = parts[0]
+        address1 = parts[1]
+        zip_code = parts[2]
+        city = parts[3]
+        siret = parts[4] if len(parts) > 4 else ""
+        tva = parts[5] if len(parts) > 5 else ""
 
-    return MENU
+        if siret == "-":
+            siret = ""
+        if tva == "-":
+            tva = ""
 
-
-async def invoices_choose_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-
-    cid = int(q.data.split("::")[1])
-    client = db.get_client(cid)
-
-    invs = db.list_invoices_for_client(cid, limit=80)
-    if not invs:
-        await q.edit_message_text(
-            f"Aucune facture pour {client.get('name')}.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬅️ Retour", callback_data="INVS::BY_CLIENT")],
-                [InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")],
-            ])
+        cid = db.add_client(
+            name=name,
+            address1=address1,
+            zip_code=zip_code,
+            city=city,
+            country="France",
+            siret=siret,
+            tva=tva
         )
-        return MENU
+        client = db.get_client(cid)
+        db.client_folder(client)
+        ok += 1
 
-    kb = [[invoice_to_btn(inv)] for inv in invs[:40]]
-    kb.append([InlineKeyboardButton("⬅️ Retour", callback_data="INVS::BY_CLIENT")])
-    kb.append([InlineKeyboardButton("⬅️ Menu", callback_data="BACK::MENU")])
-    await q.edit_message_text(f"📄 Factures — {client.get('name')} :", reply_markup=InlineKeyboardMarkup(kb))
-    return INVOICES_LIST
+    await update.message.reply_text(f"✅ Import terminé\nAjoutés: {ok}\nIgnorés: {bad}")
+    return await go_menu(update)
+
+
+# ---------- MES FACTURES ----------
+async def invoices_client_pick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+
+    if q.data == "INVCLMODE::SEARCH":
+        await q.edit_message_text("🔎 Recherche client (Mes factures)\nTape le nom / email / tel :")
+        return INVOICES_CLIENT_PICK
+
+    if q.data.startswith("INVCL::"):
+        client_id = int(q.data.split("::")[1])
+        client = db.get_client(client_id)
+        context.user_data["inv_client_id"] = client_id
+        context.user_data["inv_client"] = client
+
+        invs = db.list_invoices_for_client(client_id, limit=50)
+        if not invs:
+            await q.edit_message_text(
+                f"🗂️ {client.get('name')} — aucune facture.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Retour", callback_data="MENU::INVOICES")]])
+            )
+            return INVOICES_CLIENT_PICK
+
+        kb = [[invoice_to_btn(inv)] for inv in invs[:40]]
+        kb.append([InlineKeyboardButton("⬅️ Retour clients", callback_data="MENU::INVOICES")])
+        await q.edit_message_text(f"🗂️ Factures — {client.get('name')} :", reply_markup=InlineKeyboardMarkup(kb))
+        return INVOICES_LIST
+
+    if q.data == "BACK::MENU":
+        return await go_menu(update, edit=True)
+
+    # si l’utilisateur envoie du texte ici (recherche) on ignore dans ce handler
+    return INVOICES_CLIENT_PICK
+
+
+async def invoices_search_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = (update.message.text or "").strip()
+    results = db.search_clients(query, 20)
+    if not results:
+        await update.message.reply_text("Aucun résultat. Réessaie.")
+        return INVOICES_CLIENT_PICK
+
+    kb = [[client_to_btn(c, prefix="INVCL::")] for c in results]
+    kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
+    await update.message.reply_text("Résultats :", reply_markup=InlineKeyboardMarkup(kb))
+    return INVOICES_CLIENT_PICK
 
 
 async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    invoice_id = int(q.data.split("::")[1])
 
-    inv = db.get_invoice(invoice_id)
+    if q.data == "MENU::INVOICES":
+        # revenir à la liste clients
+        return await menu_click(update, context)
+
+    if not q.data.startswith("INVFILE::"):
+        return INVOICES_LIST
+
+    inv_id = int(q.data.split("::")[1])
+    inv = db.get_invoice(inv_id)
     if not inv:
-        await q.edit_message_text("Facture introuvable.", reply_markup=main_menu_keyboard())
-        return MENU
+        await q.edit_message_text("Facture introuvable.")
+        return await go_menu(update)
 
-    pdf_path = Path(inv["pdf_path"])
-    if not pdf_path.exists():
-        await q.edit_message_text(
-            "PDF introuvable sur le serveur.\n(Le volume /data a peut-être été reset ou chemin incorrect.)",
-            reply_markup=main_menu_keyboard()
-        )
-        return MENU
+    pdf_path = inv.get("pdf_path", "")
+    if not pdf_path or not Path(pdf_path).exists():
+        await q.edit_message_text("PDF introuvable (chemin manquant).")
+        return await go_menu(update)
 
-    await q.edit_message_text("📤 Envoi du PDF…")
-    with open(pdf_path, "rb") as f:
-        await q.message.reply_document(document=InputFile(f, filename=f"{inv['number']}.pdf"))
-
-    await q.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
-    return MENU
+    await q.message.reply_document(document=InputFile(str(pdf_path)), filename=f"{inv.get('number','FACTURE')}.pdf")
+    return INVOICES_LIST
 
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -710,32 +729,33 @@ def main():
         states={
             MENU: [
                 CallbackQueryHandler(menu_click, pattern=r"^MENU::"),
-                CallbackQueryHandler(invoices_click, pattern=r"^INVS::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
-                CallbackQueryHandler(clients_menu_click, pattern=r"^CLIENTS::"),
             ],
 
             CLIENTS_MENU: [
-                CallbackQueryHandler(clients_menu_click, pattern=r"^CLIENTS::"),
+                CallbackQueryHandler(clients_menu_click, pattern=r"^(CLIENTS::|BACK::MENU$)"),
+                CallbackQueryHandler(back_clients, pattern=r"^BACK::CLIENTS$"),
+            ],
+
+            CLIENT_CHOOSE_FOR_INV: [
+                CallbackQueryHandler(inv_client_mode, pattern=r"^(INVCLIENT::|BACK::MENU$)"),
+                CallbackQueryHandler(client_select_for_inv, pattern=r"^INVCLIENTSEL::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
-            CLIENT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_search)],
+            CLIENT_SEARCH_FOR_INV: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, client_search_for_inv)
+            ],
+
             CLIENT_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name)],
             CLIENT_ADD_ADDR: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr)],
             CLIENT_ADD_CITYZIP: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip)],
             CLIENT_ADD_SIRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret)],
             CLIENT_ADD_TVA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva)],
-            IMPORT_CLIENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients)],
 
-            INV_CLIENT_CHOOSE: [
-                CallbackQueryHandler(invclient_mode, pattern=r"^INVCLIENTMODE::"),
-                CallbackQueryHandler(invclient_select, pattern=r"^INVCLIENT::"),
-                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
-            ],
             INV_DESC: [
                 CallbackQueryHandler(desc_pick, pattern=r"^PRESET::"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
             ],
             INV_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, price_step)],
             INV_CONFIRM: [
@@ -744,14 +764,15 @@ def main():
             ],
             INV_FORCE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, force_number)],
 
-            INVOICES_CLIENT_CHOOSE: [
-                CallbackQueryHandler(invoices_choose_client, pattern=r"^INVSCLIENT::"),
-                CallbackQueryHandler(invoices_click, pattern=r"^INVS::"),
-                CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+            IMPORT_CLIENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients)],
+
+            INVOICES_CLIENT_PICK: [
+                CallbackQueryHandler(invoices_client_pick, pattern=r"^(INVCL::|INVCLMODE::|BACK::MENU$)"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, invoices_search_text),
+                CallbackQueryHandler(menu_click, pattern=r"^MENU::INVOICES$"),
             ],
             INVOICES_LIST: [
-                CallbackQueryHandler(invoice_open, pattern=r"^INVOICE::"),
-                CallbackQueryHandler(invoices_click, pattern=r"^INVS::"),
+                CallbackQueryHandler(invoice_open, pattern=r"^(INVFILE::|MENU::INVOICES$)"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
             ],
         },
@@ -762,7 +783,7 @@ def main():
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-    # ⚠️ Si tu vois "telegram.error.Conflict", c’est que 2 bots tournent en même temps (2 instances).
+    # ⚠️ Si tu vois "telegram.error.Conflict", c'est 2 instances du bot en même temps.
     app.run_polling()
 
 
