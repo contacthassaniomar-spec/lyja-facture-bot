@@ -4,10 +4,22 @@ from pathlib import Path
 from datetime import date
 from decimal import Decimal
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+)
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    ConversationHandler, ContextTypes, filters
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
 )
 
 import db
@@ -145,6 +157,18 @@ def normalize_client_for_pdf(client: dict) -> dict:
 
 
 # ---------------- Keyboards ----------------
+def persistent_menu_keyboard():
+    # ✅ Menu permanent au-dessus du clavier
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton("🏠 Menu"), KeyboardButton("🧾 Créer une facture")],
+            [KeyboardButton("👥 Clients"), KeyboardButton("🗂️ Mes factures")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
 def main_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🧾 Créer une facture", callback_data="MENU::NEW_INV")],
@@ -186,11 +210,66 @@ def invoice_to_btn(inv: dict):
 
 
 async def go_menu(update: Update, text="🏠 Menu :", edit=False):
+    # ✅ on ré-affiche le clavier permanent
     if edit and update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
     else:
         if update.effective_message:
-            await update.effective_message.reply_text(text, reply_markup=main_menu_keyboard())
+            await update.effective_message.reply_text(
+                text,
+                reply_markup=persistent_menu_keyboard()
+            )
+            await update.effective_message.reply_text(
+                "Choisis une action :",
+                reply_markup=main_menu_keyboard()
+            )
+    return MENU
+
+
+# ✅ ROUTEUR du menu permanent (reply keyboard)
+async def persistent_menu_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = (update.message.text or "").strip()
+
+    if txt in ("🏠 Menu", "/menu"):
+        return await go_menu(update, text="🏠 Menu :")
+
+    if txt == "🧾 Créer une facture":
+        context.user_data.clear()
+        await update.message.reply_text(
+            "🧾 Nouvelle facture — choisis le client :",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔎 Rechercher un client", callback_data="INVCLIENT::SEARCH")],
+                [InlineKeyboardButton("📋 Choisir dans la liste", callback_data="INVCLIENT::LIST")],
+                [InlineKeyboardButton("➕ Ajouter un client", callback_data="INVCLIENT::ADD")],
+                [InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")],
+            ])
+        )
+        return CLIENT_CHOOSE_FOR_INV
+
+    if txt == "👥 Clients":
+        await update.message.reply_text(
+            "👥 Clients — choisis une action :",
+            reply_markup=clients_menu_keyboard()
+        )
+        return CLIENTS_MENU
+
+    if txt == "🗂️ Mes factures":
+        clients = db.list_clients(200)
+        if not clients:
+            await update.message.reply_text("Aucun client enregistré.", reply_markup=persistent_menu_keyboard())
+            return MENU
+
+        kb = [[client_to_btn(c, prefix="INVCL::")] for c in clients[:40]]
+        kb.append([InlineKeyboardButton("🔎 Rechercher", callback_data="INVCLMODE::SEARCH")])
+        kb.append([InlineKeyboardButton("⬅️ Retour menu", callback_data="BACK::MENU")])
+
+        await update.message.reply_text(
+            "🗂️ Mes factures — choisis un client :",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
+        return INVOICES_CLIENT_PICK
+
+    # si l'utilisateur tape autre chose, on ignore
     return MENU
 
 
@@ -202,7 +281,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.init_db()
     context.user_data.clear()
-    await update.message.reply_text("✅ Bot Facture en ligne.\nChoisis une action :", reply_markup=main_menu_keyboard())
+    await update.message.reply_text(
+        "✅ Bot Facture en ligne.\nChoisis une action :",
+        reply_markup=persistent_menu_keyboard()
+    )
+    await update.message.reply_text("Menu :", reply_markup=main_menu_keyboard())
     return MENU
 
 
@@ -536,10 +619,8 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     company_pdf = normalize_company_for_pdf(company)
     client_pdf = normalize_client_for_pdf(client)
 
-    # Génération PDF
     draw_invoice_pdf(pdf_path, company_pdf, client_pdf, invoice_doc, str(logo))
 
-    # Vérif taille
     try:
         size = pdf_path.stat().st_size
     except FileNotFoundError:
@@ -570,8 +651,6 @@ async def inv_confirm_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await q.edit_message_text("✅ Facture générée. Envoi du PDF…")
-
-    # ✅ ENVOI EN BINAIRE (corrige 52 octets)
     with open(pdf_path, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=f"{number}.pdf"))
 
@@ -713,7 +792,6 @@ async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"PDF introuvable : {pdf_path}")
         return await go_menu(update)
 
-    # ✅ ENVOI EN BINAIRE (corrige 52 octets)
     filename = f"{inv.get('number','FACTURE')}.pdf"
     with open(p, "rb") as f:
         await q.message.reply_document(document=InputFile(f, filename=filename))
@@ -722,7 +800,7 @@ async def invoice_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Commande inconnue. Tape /start")
+    await update.message.reply_text("Commande inconnue. Tape /start", reply_markup=persistent_menu_keyboard())
 
 
 def main():
@@ -731,7 +809,6 @@ def main():
         raise RuntimeError("BOT_TOKEN manquant (Railway Variables).")
 
     db.init_db()
-
     app = Application.builder().token(token).build()
 
     conv = ConversationHandler(
@@ -740,60 +817,84 @@ def main():
             MENU: [
                 CallbackQueryHandler(menu_click, pattern=r"^MENU::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+                # ✅ ACTIVE le menu permanent
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
 
             CLIENTS_MENU: [
                 CallbackQueryHandler(clients_menu_click, pattern=r"^(CLIENTS::|BACK::MENU$)"),
                 CallbackQueryHandler(back_clients, pattern=r"^BACK::CLIENTS$"),
+                # ✅ menu permanent utilisable ici aussi
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
 
             CLIENT_CHOOSE_FOR_INV: [
                 CallbackQueryHandler(inv_client_mode, pattern=r"^(INVCLIENT::|BACK::MENU$)"),
                 CallbackQueryHandler(client_select_for_inv, pattern=r"^INVCLIENTSEL::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
             CLIENT_SEARCH_FOR_INV: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, client_search_for_inv)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, client_search_for_inv),
             ],
 
-            CLIENT_ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name)],
-            CLIENT_ADD_ADDR: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr)],
-            CLIENT_ADD_CITYZIP: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip)],
-            CLIENT_ADD_SIRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret)],
-            CLIENT_ADD_TVA: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva)],
+            CLIENT_ADD_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_name),
+            ],
+            CLIENT_ADD_ADDR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_addr),
+            ],
+            CLIENT_ADD_CITYZIP: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_cityzip),
+            ],
+            CLIENT_ADD_SIRET: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_siret),
+            ],
+            CLIENT_ADD_TVA: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_client_tva),
+            ],
 
             INV_DESC: [
                 CallbackQueryHandler(desc_pick, pattern=r"^PRESET::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, desc_manual),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
-            INV_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, price_step)],
+            INV_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, price_step),
+            ],
             INV_CONFIRM: [
                 CallbackQueryHandler(inv_confirm_click, pattern=r"^INV::"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
-            INV_FORCE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, force_number)],
+            INV_FORCE_NUMBER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, force_number),
+            ],
 
-            IMPORT_CLIENTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients)],
+            IMPORT_CLIENTS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, import_clients),
+            ],
 
             INVOICES_CLIENT_PICK: [
                 CallbackQueryHandler(invoices_client_pick, pattern=r"^(INVCL::|INVCLMODE::|BACK::MENU$)"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, invoices_search_text),
                 CallbackQueryHandler(menu_click, pattern=r"^MENU::INVOICES$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
             INVOICES_LIST: [
                 CallbackQueryHandler(invoice_open, pattern=r"^(INVFILE::|MENU::INVOICES$)"),
                 CallbackQueryHandler(back_menu, pattern=r"^BACK::MENU$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, persistent_menu_router),
             ],
         },
         fallbacks=[CommandHandler("start", start)],
-        allow_reentry=True
+        allow_reentry=True,
     )
 
     app.add_handler(conv)
     app.add_handler(MessageHandler(filters.COMMAND, unknown))
 
-    # ⚠️ Si tu vois "telegram.error.Conflict", c'est 2 instances du bot en même temps.
     app.run_polling()
 
 
